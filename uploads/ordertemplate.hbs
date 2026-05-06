@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Details</title>
+  <style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    color: #2C3E50;
+    line-height: 1.5;
+    padding: 18px;
+    background: #F4F6F9;
+    font-size: 13px;
+  }
+
+  /* HEADER */
+  .header {
+    background: linear-gradient(135deg, #1976D2, #0D47A1);
+    color: white;
+    padding: 20px 15px;
+    border-radius: 8px;
+    margin-bottom: 18px;
+    text-align: center;
+  }
+
+  .header h1 {
+    font-size: 20px;
+    margin-bottom: 4px;
+    font-weight: 600;
+  }
+
+  .header p {
+    font-size: 11px;
+    opacity: 0.9;
+  }
+
+  /* SECTIONS */
+  .section {
+    background: #ffffff;
+    padding: 14px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    border: 1px solid #E5E7EB;
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1976D2;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid #E3F2FD;
+    padding-bottom: 6px;
+  }
+
+  /* CUSTOMER INFO */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .info-label {
+    font-size: 10px;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 3px;
+  }
+
+  .info-value {
+    font-size: 12px;
+    font-weight: 500;
+    color: #111827;
+  }
+
+  /* DELIVERY TYPE BADGE */
+  .delivery-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 16px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 8px;
+  }
+
+  .delivery-badge.home-delivery {
+    background: #E8F5E9;
+    color: #2E7D32;
+    border: 1px solid #4CAF50;
+  }
+
+  .delivery-badge.store-pickup {
+    background: #FFF3E0;
+    color: #E65100;
+    border: 1px solid #FF9800;
+  }
+
+  /* TABLE */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    background: white;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #E5E7EB;
+  }
+
+  thead {
+    background: #1976D2;
+    color: white;
+  }
+
+  th {
+    padding: 8px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  td {
+    padding: 8px;
+    border-bottom: 1px solid #F1F1F1;
+    font-size: 12px;
+  }
+
+  tbody tr:nth-child(even) {
+    background: #F9FAFB;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* TOTALS */
+  .totals-section {
+    margin-top: 12px;
+    padding-top: 8px;
+  }
+
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+
+  .total-row.subtotal {
+    border-top: 1px solid #E5E7EB;
+    padding-top: 8px;
+    margin-top: 6px;
+  }
+
+  .total-row.grand-total {
+    border-top: 2px solid #1976D2;
+    margin-top: 6px;
+    padding-top: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #0D47A1;
+  }
+
+  /* BADGE */
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 14px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .badge-primary {
+    background: #E3F2FD;
+    color: #0D47A1;
+    border: 1px solid #1976D2;
+  }
+
+  /* MEDIA */
+  .media-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .media-card {
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+    padding: 8px;
+    background: #F9FAFB;
+    text-align: center;
+    page-break-inside: avoid;
+  }
+
+  .image-card img {
+    max-width: 100%;
+    max-height: 150px;
+    object-fit: contain;
+    border-radius: 6px;
+    margin-bottom: 6px;
+  }
+
+  .image-card a {
+    font-size: 10px;
+    color: #1976D2;
+    text-decoration: none;
+  }
+
+  /* MESSAGE */
+  .message-box {
+    background: #FFF8E1;
+    border-left: 4px solid #FB8C00;
+    padding: 10px 12px;
+    border-radius: 6px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: #92400E;
+  }
+
+  /* FOOTER */
+  .footer {
+    text-align: center;
+    margin-top: 24px;
+    padding-top: 10px;
+    border-top: 1px solid #E5E7EB;
+    color: #6B7280;
+    font-size: 10px;
+  }
+
+  .text-right {
+    text-align: right;
+  }
+
+  .text-center {
+    text-align: center;
+  }
+</style>
+
+
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <h1>New Order Received</h1>
+    <p>{{orderDate}}</p>
+  </div>
+
+  <!-- Customer Information -->
+  <div class="section">
+    <div class="section-title">Customer Information</div>
+    
+    <!-- Delivery Type Badge -->
+    {{#if contact.deliveryType}}
+    <div style="margin-bottom: 12px;">
+      {{#if contact.isHomeDelivery}}
+        <span class="delivery-badge home-delivery">🏠 Home Delivery</span>
+      {{else}}
+        <span class="delivery-badge store-pickup">🏪 Store Pickup</span>
+      {{/if}}
+    </div>
+    {{/if}}
+    
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="info-label">Name</div>
+        <div class="info-value">{{contact.name}}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Phone Number</div>
+        <div class="info-value">{{contact.number}}</div>
+      </div>
+      
+      {{#if contact.recieverName}}
+      <div class="info-item">
+        <div class="info-label">Receiver Name</div>
+        <div class="info-value">{{contact.recieverName}}</div>
+      </div>
+      {{/if}}
+      
+      {{#if contact.recieverNumber}}
+      <div class="info-item">
+        <div class="info-label">Receiver Phone Number</div>
+        <div class="info-value">{{contact.recieverNumber}}</div>
+      </div>
+      {{/if}}
+      
+      {{#if contact.isHomeDelivery}}
+      <div class="info-item">
+        <div class="info-label">City</div>
+        <div class="info-value">{{contact.city}}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">State</div>
+        <div class="info-value">{{contact.state}}</div>
+      </div>
+      <div class="info-item">
+        <div class="info-label">Pin Code</div>
+        <div class="info-value">{{contact.pinCode}}</div>
+      </div>
+      {{/if}}
+    </div>
+    
+    {{#if contact.isHomeDelivery}}
+    {{#if contact.address}}
+    <div class="info-item" style="margin-top: 15px;">
+      <div class="info-label">Full Address</div>
+      <div class="info-value">{{contact.address}}</div>
+    </div>
+    {{/if}}
+    {{/if}}
+  </div>
+
+  <!-- Order Items -->
+  <div class="section">
+    <div class="section-title">Order Items</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Category</th>
+          <th class="text-center">Quantity</th>
+          <th class="text-right">Price</th>
+          <th class="text-right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each cartItems}}
+        <tr>
+          <td><strong>{{this.productName}}</strong></td>
+          <td><span class="badge badge-primary">{{this.categoryName}}</span></td>
+          <td class="text-center">{{this.quantity}}</td>
+          <td class="text-right">{{this.price}}</td>
+          <td class="text-right"><strong>{{this.total}}</strong></td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <!-- Totals -->
+    <div class="totals-section">
+      <div class="total-row subtotal">
+        <span>Subtotal:</span>
+        <span><strong>₹{{subTotal}}</strong></span>
+      </div>
+      {{#if contact.isHomeDelivery}}
+      <div class="total-row">
+        <span>Shipping Charges:</span>
+        <span><strong>₹{{shipping}}</strong></span>
+      </div>
+      {{/if}}
+      <div class="total-row grand-total">
+        <span>GRAND TOTAL:</span>
+        <span>₹{{grandTotal}}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Media URLs if any -->
+ {{#if mediaUrls.length}}
+    <div class="section">
+      <div class="section-title">Media Attachments</div>
+      <div class="media-grid">
+        {{#each mediaUrls}}
+            <div class="media-card image-card">
+              <img src="{{this}}" alt="Attachment Image" />
+              <a href="{{this}}" target="_blank">View Full Image</a>
+            </div>
+        {{/each}}
+      </div>
+    </div>
+    {{/if}}
+
+
+  <!-- Additional Message -->
+  {{#if additionalMessage}}
+  <div class="message-box">
+    <strong>💬 Customer Message:</strong><br>
+    {{additionalMessage}}
+  </div>
+  {{/if}}
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>This is an automated order notification generated by your WhatsApp Business system.</p>
+    <p style="margin-top: 5px;">For any queries, please contact your system administrator.</p>
+  </div>
+</body>
+</html>
