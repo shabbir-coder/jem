@@ -29,7 +29,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // ==================== API ROUTES ====================
-app.use('/api', routes);
+app.use('/jem/api', routes);
 
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {
