@@ -26,32 +26,33 @@ app.use(express.urlencoded({ extended: true }));
 
 // ==================== STATIC FILES ====================
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.use(express.static(path.join(__dirname, 'dist')));
-
-// ==================== API ROUTES ====================
-app.use('/api', routes);
 
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', uptime: process.uptime() });
 });
 
-// ==================== SPA ROUTES ====================
-app.get('/panel', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+// ==================== /jem ROUTES (Admin Node App) ====================
+
+// API routes under /jem/api
+app.use('/jem/api', routes);
+
+// Serve admin panel static files from dist/admin (or wherever your admin build is)
+app.use('/jem', express.static(path.join(__dirname, 'dist/admin')));
+
+// Admin SPA catch-all — any /jem/* that isn't API returns admin index.html
+app.get('/jem/*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist/admin', 'index.html'));
 });
 
-// IMPORTANT: Catch-all AFTER API
-app.get('*', (req, res) => {
-  if (req.originalUrl.startsWith('/api')) {
-    return res.status(404).json({
-      success: false,
-      message: 'API route not found'
-    });
-  }
+// ==================== REACT FRONTEND (root) ====================
 
-  // Always return index.html for Angular routes
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+// Serve React app static files
+app.use(express.static(path.join(__dirname, 'dist/frontend')));
+
+// React SPA catch-all
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist/frontend', 'index.html'));
 });
 
 // ==================== ERROR HANDLER ====================
@@ -61,7 +62,7 @@ app.use(errorHandler);
 const server = app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
   console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 API Base: http://localhost:${port}/api`);
+  console.log(`🔗 API Base: http://localhost:${port}/jem/api`);
 });
 
 module.exports = app;
