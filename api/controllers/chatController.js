@@ -77,9 +77,9 @@ const receiveWebhook = async (req, res) => {
 const handleIncomingMessage = async (message, value) => {
   try {
     // Prevent duplicates
+    console.log('icoming message', message)
     if (await Message.exists({ messageId: message.id })) return;
 
-console.log('icoming message', message)
     const sender = message.from;
     const phoneNumberId = value.metadata.phone_number_id;
     const type = message.type;
