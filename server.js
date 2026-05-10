@@ -26,7 +26,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ==================== STATIC FILES ====================
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
+app.use('/jem/uploads', express.static(path.join(__dirname, 'uploads')));
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', uptime: process.uptime() });
