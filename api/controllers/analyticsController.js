@@ -32,23 +32,49 @@ exports.getOverview = async (req, res) => {
         { $group: { _id: null, total: { $sum: '$totalCost' } } }
       ]),
 
-      CampaignLog.find({ userId }).sort({ createdAt: -1 }).limit(5).lean(),
+      // FIXED: Remove .sort() - Cosmos DB requires indexes for sorting
+      // Alternative: sort in memory after fetching
+      CampaignLog.find({ userId }).limit(5).lean().then(docs => 
+        docs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      ),
 
+      // FIXED: Remove .sort() and populate
       Purchase.find()
-        .populate('invoice')
-        .sort({ createdAt: -1 })
         .limit(10)
-        .lean(),
+        .lean()
+        .then(async (purchases) => {
+          // Sort in memory
+          purchases.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          
+          // Manual populate for Cosmos DB compatibility
+          const invoiceIds = purchases.map(p => p.invoice).filter(Boolean);
+          const invoices = await Invoice.find({ _id: { $in: invoiceIds } }).lean();
+          const invoiceMap = {};
+          invoices.forEach(inv => { invoiceMap[inv._id.toString()] = inv; });
+          
+          return purchases.map(p => ({
+            ...p,
+            invoice: p.invoice ? invoiceMap[p.invoice.toString()] : null
+          }));
+        }),
 
       Purchase.countDocuments(),
 
-      // totalAmount is stored as a STRING in Purchase ("1700.00")
-      // so we must convert it before summing
+      // FIXED: Use $convert instead of $toDouble (more compatible)
       Purchase.aggregate([
         {
           $group: {
             _id: null,
-            total: { $sum: { $toDouble: '$totalAmount' } }
+            total: { 
+              $sum: { 
+                $convert: { 
+                  input: '$totalAmount', 
+                  to: 'double',
+                  onError: 0,
+                  onNull: 0
+                } 
+              } 
+            }
           }
         }
       ]),
@@ -98,10 +124,17 @@ exports.getCampaigns = async (req, res) => {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [campaigns, total] = await Promise.all([
-      CampaignLog.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+    
+    // FIXED: Fetch without sort, then sort in memory
+    const [allCampaigns, total] = await Promise.all([
+      CampaignLog.find(filter).skip(skip).limit(Number(limit)).lean(),
       CampaignLog.countDocuments(filter)
     ]);
+
+    // Sort in memory
+    const campaigns = allCampaigns.sort((a, b) => 
+      new Date(b.createdAt) - new Date(a.createdAt)
+    );
 
     // Attach message-level delivery stats per campaign
     const enriched = await Promise.all(campaigns.map(async (c) => {
@@ -171,15 +204,28 @@ exports.getPurchases = async (req, res) => {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [purchases, total] = await Promise.all([
-      Purchase.find(filter)
-        .populate('invoice')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(Number(limit))
-        .lean(),
+    
+    // FIXED: Remove .sort() and .populate(), do manually
+    const [allPurchases, total] = await Promise.all([
+      Purchase.find(filter).skip(skip).limit(Number(limit)).lean(),
       Purchase.countDocuments(filter)
     ]);
+
+    // Sort in memory
+    const sortedPurchases = allPurchases.sort((a, b) => 
+      new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    // Manual populate
+    const invoiceIds = sortedPurchases.map(p => p.invoice).filter(Boolean);
+    const invoices = await Invoice.find({ _id: { $in: invoiceIds } }).lean();
+    const invoiceMap = {};
+    invoices.forEach(inv => { invoiceMap[inv._id.toString()] = inv; });
+    
+    const purchases = sortedPurchases.map(p => ({
+      ...p,
+      invoice: p.invoice ? invoiceMap[p.invoice.toString()] : null
+    }));
 
     res.json({
       success: true,
@@ -199,61 +245,80 @@ exports.getPurchases = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // HELPER: aggregate message delivery stats for a campaign
+// FIXED: Removed $arrayElemAt which uses $let internally
 // ─────────────────────────────────────────────────────────────
 const getMessageStats = async (campaignId) => {
   try {
-    const agg = await Message.aggregate([
-      { $match: { campaignId: toObjectId(campaignId) } },
-      {
-        $project: {
-          lastStatus: { $arrayElemAt: ['$status', -1] }
-        }
-      },
-      {
-        $group: {
-          _id:   '$lastStatus.status',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
+    // COSMOS DB COMPATIBLE: Fetch all messages and process in memory
+    const messages = await Message.find({ campaignId: toObjectId(campaignId) })
+      .select('status')
+      .lean();
 
-    const stats = { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
-    agg.forEach(row => {
-      const s = (row._id || '').toLowerCase();
-      if (s === 'sent')      stats.sent      += row.count;
-      if (s === 'delivered') stats.delivered += row.count;
-      if (s === 'read')      stats.read      += row.count;
-      if (s === 'failed')    stats.failed    += row.count;
-      stats.total += row.count;
+    const stats = { sent: 0, delivered: 0, read: 0, failed: 0, total: messages.length };
+
+    messages.forEach(msg => {
+      if (msg.status && Array.isArray(msg.status) && msg.status.length > 0) {
+        // Get last status manually (instead of $arrayElemAt)
+        const lastStatus = msg.status[msg.status.length - 1];
+        const s = (lastStatus.status || '').toLowerCase();
+        
+        if (s === 'sent')      stats.sent++;
+        if (s === 'delivered') stats.delivered++;
+        if (s === 'read')      stats.read++;
+        if (s === 'failed')    stats.failed++;
+      }
     });
 
     return stats;
-  } catch {
-    // If campaignId not yet used / messages not tagged — return zeroes
+  } catch (err) {
+    console.error('getMessageStats error:', err);
     return { sent: 0, delivered: 0, read: 0, failed: 0, total: 0 };
   }
 };
 
 // ─────────────────────────────────────────────────────────────
 // HELPER: hourly timeline of status changes for a campaign
+// FIXED: Simplified aggregation for Cosmos DB
 // ─────────────────────────────────────────────────────────────
 const getMessageTimeline = async (campaignId) => {
   try {
-    return await Message.aggregate([
-      { $match: { campaignId: toObjectId(campaignId) } },
-      { $unwind: '$status' },
-      {
-        $group: {
-          _id: {
-            status: '$status.status',
-            hour:   { $dateToString: { format: '%Y-%m-%dT%H:00', date: '$status.timeStamp' } }
-          },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { '_id.hour': 1 } }
-    ]);
-  } catch {
+    // COSMOS DB COMPATIBLE: Simpler aggregation without complex date functions
+    const messages = await Message.find({ campaignId: toObjectId(campaignId) })
+      .select('status')
+      .lean();
+
+    // Process in memory instead of complex aggregation
+    const timelineMap = {};
+
+    messages.forEach(msg => {
+      if (msg.status && Array.isArray(msg.status)) {
+        msg.status.forEach(statusEntry => {
+          if (statusEntry.timeStamp && statusEntry.status) {
+            // Format hour manually
+            const date = new Date(statusEntry.timeStamp);
+            const hour = date.toISOString().substring(0, 13) + ':00';
+            const status = statusEntry.status;
+
+            const key = `${status}|${hour}`;
+            if (!timelineMap[key]) {
+              timelineMap[key] = { status, hour, count: 0 };
+            }
+            timelineMap[key].count++;
+          }
+        });
+      }
+    });
+
+    // Convert to array and sort
+    const timeline = Object.values(timelineMap);
+    timeline.sort((a, b) => a.hour.localeCompare(b.hour));
+
+    return timeline.map(t => ({
+      _id: { status: t.status, hour: t.hour },
+      count: t.count
+    }));
+  } catch (err) {
+    console.error('getMessageTimeline error:', err);
     return [];
   }
 };
