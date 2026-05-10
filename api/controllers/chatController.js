@@ -202,32 +202,28 @@ console.log('icoming message', message)
 // Handle message status updates
 const handleMessageStatus = async (status) => {
   try {
-    const update = {
-      $push: {
-        status: {
-          $each: [{
-            status: status.status,
-            timeStamp: new Date()
-          }],
-          $slice: -10 // keep last 10 statuses only
-        }
-      }
-    };
+    // COSMOS DB COMPATIBLE: fetch, modify in memory, then save (avoids $slice in $push)
+    const msg = await Message.findOne({
+      messageId: status.id,
+      'status.status': { $ne: status.status } // avoid duplicates
+    });
 
-    if (status.status === 'read') {
-      update.$set = {
-        isRead: true,
-        readAt: new Date()
-      };
+    if (!msg) return;
+
+    // Append new status entry
+    msg.status.push({ status: status.status, timeStamp: new Date() });
+
+    // Keep only last 10 statuses in memory
+    if (msg.status.length > 10) {
+      msg.status = msg.status.slice(-10);
     }
 
-    await Message.updateOne(
-      {
-        messageId: status.id,
-        'status.status': { $ne: status.status } // avoid duplicates
-      },
-      update
-    );
+    if (status.status === 'read') {
+      msg.isRead = true;
+      msg.readAt = new Date();
+    }
+
+    await msg.save();
   } catch (error) {
     console.error('Handle message status error:', error);
   }
@@ -278,61 +274,43 @@ const getConversations = async (req, res) => {
       ];
     }
     /* ================================
-       AGGREGATION PIPELINE
+       COSMOS DB COMPATIBLE: fetch contacts, then join last message in memory
     ================================= */
-    const pipeline = [
-      { $match: contactMatch },
-
-      /* Lookup last message */
-      {
-        $lookup: {
-          from: 'messages',
-          let: { contactNumber: '$number' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $or: [
-                    { $eq: ['$sender', '$$contactNumber'] },
-                    { $eq: ['$receiver', '$$contactNumber'] }
-                  ]
-                }
-              }
-            },
-            { $sort: { createdAt: -1 } },
-            { $limit: 1 }
-          ],
-          as: 'lastMessage'
-        }
-      },
-
-      /* Convert array → object */
-      {
-        $addFields: {
-          lastMessage: { $arrayElemAt: ['$lastMessage', 0] }
-        }
-      },
-
-      /* Sort conversations */
-      {
-        $sort: {
-          lastMessageAt: -1,
-          'lastMessage.createdAt': -1
-        }
-      },
-
-      /* Pagination */
-      { $skip: skip },
-      { $limit: limitNum }
-    ];
-
-    /* ================================
-       EXECUTION
-    ================================= */
-    const [data, totalResult] = await Promise.all([
-      Contact.aggregate(pipeline),
+    const [allContacts, totalResult] = await Promise.all([
+      Contact.find(contactMatch).lean(),
       Contact.countDocuments(contactMatch)
     ]);
+
+    // For each contact, find the last message (in parallel, batched)
+    const contactNumbers = allContacts.map(c => c.number);
+
+    // Fetch the most recent message per contact number using simple queries
+    const lastMessages = await Promise.all(
+      contactNumbers.map(num =>
+        Message.findOne({
+          $or: [{ sender: num }, { receiver: num }]
+        })
+          .sort({ createdAt: -1 })
+          .lean()
+          .catch(() => null)
+      )
+    );
+
+    // Attach lastMessage to each contact, then sort + paginate in memory
+    let data = allContacts.map((contact, i) => ({
+      ...contact,
+      lastMessage: lastMessages[i] || null
+    }));
+
+    // Sort: contacts with most recent message/activity first
+    data.sort((a, b) => {
+      const aTime = a.lastMessageAt ? new Date(a.lastMessageAt) : (a.lastMessage ? new Date(a.lastMessage.createdAt) : new Date(0));
+      const bTime = b.lastMessageAt ? new Date(b.lastMessageAt) : (b.lastMessage ? new Date(b.lastMessage.createdAt) : new Date(0));
+      return bTime - aTime;
+    });
+
+    // Paginate in memory
+    data = data.slice(skip, skip + limitNum);
 
     res.json({
       success: true,
@@ -364,17 +342,30 @@ const getMessages = async (req, res) => {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const messages = await Message.find({
+    // COSMOS DB COMPATIBLE: no .sort(), no .populate() — do manually
+    const allMessages = await Message.find({
       $or: [
         { sender: userNumber },
         { receiver: userNumber }
       ]
     })
-    .sort({ createdAt: -1 })
     .skip(skip)
     .limit(parseInt(limit))
-    .populate('file')
     .lean();
+
+    // Sort in memory (descending to get latest, then reverse for chronological)
+    allMessages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Manual populate for file
+    const fileIds = allMessages.map(m => m.file).filter(Boolean);
+    const files = fileIds.length ? await File.find({ _id: { $in: fileIds } }).lean() : [];
+    const fileMap = {};
+    files.forEach(f => { fileMap[f._id.toString()] = f; });
+
+    const messages = allMessages.map(m => ({
+      ...m,
+      file: m.file ? fileMap[m.file.toString()] || m.file : null
+    }));
 
     const total = await Message.countDocuments({
       $or: [
@@ -711,19 +702,14 @@ const uploadFile = async(req, res)=>{
 // @access  Private
 const getUnreadCount = async (req, res) => {
   try {
-    const totalUnread = await Contact.aggregate([
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$unreadCount' }
-        }
-      }
-    ]);
+    // COSMOS DB COMPATIBLE: fetch unreadCount values and sum in memory
+    const contacts = await Contact.find({ unreadCount: { $gt: 0 } }).select('unreadCount').lean();
+    const totalUnread = contacts.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
 
     res.json({
       success: true,
       data: {
-        unreadCount: totalUnread[0]?.total || 0
+        unreadCount: totalUnread || 0
       }
     });
   } catch (error) {
@@ -1561,7 +1547,8 @@ const messageToOwner = async (req, res) => {
 
 const sendtoowner = async (req, res) => {
   try {
-    const instance = await Instance.findOne({ isActive: true, isDeleted: false }).sort({ updatedAt: -1 });
+    // COSMOS DB COMPATIBLE: no .sort() on findOne
+    const instance = await Instance.findOne({ isActive: true, isDeleted: false }).lean();
  
     if (!instance) {
       return res.status(404).json({ success: false, message: 'No active WhatsApp instance found' });
@@ -2131,7 +2118,8 @@ const sendBulkTemplate = async (req, res) => {
     }
  
     // ── Fetch active instance ─────────────────────────────────────────────
-    const instance = await Instance.findOne({ isActive: true, isDeleted: false }).sort({ updatedAt: -1 });
+    // COSMOS DB COMPATIBLE: no .sort() on findOne
+    const instance = await Instance.findOne({ isActive: true, isDeleted: false }).lean();
     if (!instance) {
       return res.status(404).json({ success: false, message: 'No active WhatsApp instance found' });
     }

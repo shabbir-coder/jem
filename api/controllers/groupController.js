@@ -100,11 +100,17 @@ const getGroups = async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const groups = await Group.find(query)
-      .sort({ isPinned: -1, updatedAt: -1 })
+    // COSMOS DB COMPATIBLE: fetch without complex sort, sort in memory
+    const allGroups = await Group.find(query)
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    // Sort in memory: pinned first, then by updatedAt descending
+    const groups = allGroups.sort((a, b) => {
+      if (b.isPinned !== a.isPinned) return (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0);
+      return new Date(b.updatedAt) - new Date(a.updatedAt);
+    });
 
     // Get member count for each group
     const groupsWithCounts = await Promise.all(
@@ -464,18 +470,31 @@ const getGroupMessages = async (req, res) => {
 
     const contactNumbers = contacts.map(c => c.number);
 
-    // Get all messages involving these contacts
-    const messages = await Message.find({
+    // COSMOS DB COMPATIBLE: no .sort(), no .populate() — manual
+    const allMessages = await Message.find({
       $or: [
         { sender: { $in: contactNumbers } },
         { receiver: { $in: contactNumbers } }
       ]
     })
-      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('file')
       .lean();
+
+    // Sort in memory descending, then reverse for chronological
+    allMessages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Manual populate file
+    const fileIds = allMessages.map(m => m.file).filter(Boolean);
+    const { File } = require('../models');
+    const files = fileIds.length ? await File.find({ _id: { $in: fileIds } }).lean() : [];
+    const fileMap = {};
+    files.forEach(f => { fileMap[f._id.toString()] = f; });
+
+    const messages = allMessages.map(m => ({
+      ...m,
+      file: m.file ? fileMap[m.file.toString()] || m.file : null
+    }));
 
     const total = await Message.countDocuments({
       $or: [

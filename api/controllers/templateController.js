@@ -6,7 +6,8 @@ const { Template, Instance } = require('../models');
 // HELPER: fetch the active instance (needed for Meta API calls)
 // ─────────────────────────────────────────────────────────────────
 const getActiveInstance = async () => {
-  const instance = await Instance.findOne({ isActive: true, isDeleted: false }).sort({ updatedAt: -1 });
+  // COSMOS DB COMPATIBLE: no .sort() on findOne
+  const instance = await Instance.findOne({ isActive: true, isDeleted: false });
   if (!instance) throw new Error('No active WhatsApp instance found');
   return instance;
 };
@@ -59,14 +60,15 @@ const metaTemplateToDb = (mt) => {
 // HELPER: upsert a batch of Meta templates into MongoDB
 // ─────────────────────────────────────────────────────────────────
 const upsertMetaTemplates = async (metaTemplates) => {
-  const ops = metaTemplates.map(mt => ({
-    updateOne: {
-      filter: { metaTemplateId: mt.id },
-      update: { $set: metaTemplateToDb(mt) },
-      upsert: true
-    }
-  }));
-  if (ops.length) await Template.bulkWrite(ops, { ordered: false });
+  // COSMOS DB COMPATIBLE: bulkWrite with updateOne ops may not support all operators
+  // Use individual findOneAndUpdate with upsert instead
+  for (const mt of metaTemplates) {
+    await Template.findOneAndUpdate(
+      { metaTemplateId: mt.id },
+      { $set: metaTemplateToDb(mt) },
+      { upsert: true, new: true }
+    );
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -155,10 +157,13 @@ exports.getAllTemplates = async (req, res) => {
 
     const skip = (Number(page) - 1) * Number(limit);
 
-    const [templates, total] = await Promise.all([
-      Template.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+    // COSMOS DB COMPATIBLE: no .sort() — fetch and sort in memory
+    const [allTemplates, total] = await Promise.all([
+      Template.find(filter).skip(skip).limit(Number(limit)).lean(),
       Template.countDocuments(filter)
     ]);
+
+    const templates = allTemplates.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     res.status(200).json({
       success: true,

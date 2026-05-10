@@ -190,11 +190,28 @@ const getFiles = async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const files = await File.find(query)
-      .sort({ createdAt: -1 })
+    // COSMOS DB COMPATIBLE: no .sort(), no .populate() — do manually
+    const allFiles = await File.find(query)
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('uploadedBy', 'name email');
+      .lean();
+
+    // Sort in memory
+    allFiles.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Manual populate uploadedBy
+    const userIds = allFiles.map(f => f.uploadedBy).filter(Boolean);
+    let userMap = {};
+    if (userIds.length) {
+      const { User } = require('../models');
+      const users = await User.find({ _id: { $in: userIds } }).select('name email').lean();
+      users.forEach(u => { userMap[u._id.toString()] = { _id: u._id, name: u.name, email: u.email }; });
+    }
+
+    const files = allFiles.map(f => ({
+      ...f,
+      uploadedBy: f.uploadedBy ? userMap[f.uploadedBy.toString()] || f.uploadedBy : null
+    }));
 
     const total = await File.countDocuments(query);
 

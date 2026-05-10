@@ -127,63 +127,62 @@ const getProducts = async (req, res) => {
     if (status)          match.status          = status;
     if (makeupPlacement) match.makeupPlacement = makeupPlacement;   // ← new
 
-    if (minPrice || maxPrice) {
-      match.$expr = {
-        $and: [
-          minPrice ? { $gte: [{ $toDouble: '$price.value' }, Number(minPrice)] } : { $gte: [1,1] },
-          maxPrice ? { $lte: [{ $toDouble: '$price.value' }, Number(maxPrice)] } : { $lte: [1,1] }
-        ]
-      };
-    }
-
     const pageNum  = parseInt(page);
     const limitNum = parseInt(limit);
     const skip     = (pageNum - 1) * limitNum;
-    const sort     = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
 
-    const result = await Product.aggregate([
-      { $match: match },
-      {
-        $facet: {
-          data: [
-            { $sort: sort },
-            { $skip: skip },
-            { $limit: limitNum },
-            { $addFields: { productIdStr: { $toString: '$_id' } } },
-            {
-              $lookup: {
-                from: 'productfiles',
-                let:  { pid: '$productIdStr' },
-                pipeline: [
-                  {
-                    $match: {
-                      $expr: {
-                        $and: [
-                          { $eq: ['$entityType', 'product'] },
-                          { $eq: ['$status', 'active']  },
-                          { $eq: ['$entityId', '$$pid'] }
-                        ]
-                      }
-                    }
-                  },
-                  { $project: { _id:1, fileName:1, originalName:1, fileType:1, mimeType:1, fileSize:1, url:1, altText:1, caption:1, createdAt:1, makeupPlacement:1, finish:1, defaultOpacity:1 } }
-                ],
-                as: 'files'
-              }
-            },
-            { $project: { productIdStr: 0 } }
-          ],
-          total: [{ $count: 'count' }]
-        }
-      }
-    ]);
+    // COSMOS DB COMPATIBLE: no $lookup with let, no $toDouble in $expr
+    // Handle price filter in memory after fetch
+    let allProducts = await Product.find(match).lean();
 
-    const products = result[0]?.data  || [];
-    const total    = result[0]?.total?.[0]?.count || 0;
+    // Apply price filter in memory
+    if (minPrice || maxPrice) {
+      allProducts = allProducts.filter(p => {
+        const val = parseFloat(p.price?.value);
+        if (isNaN(val)) return false;
+        if (minPrice && val < Number(minPrice)) return false;
+        if (maxPrice && val > Number(maxPrice)) return false;
+        return true;
+      });
+    }
+
+    // Sort in memory
+    const sortDir = sortOrder === 'asc' ? 1 : -1;
+    allProducts.sort((a, b) => {
+      const aVal = a[sortBy] ?? '';
+      const bVal = b[sortBy] ?? '';
+      if (aVal < bVal) return -sortDir;
+      if (aVal > bVal) return sortDir;
+      return 0;
+    });
+
+    const total    = allProducts.length;
+    const products = allProducts.slice(skip, skip + limitNum);
+
+    // Manual file join (replaces $lookup with let)
+    const productIds = products.map(p => p._id.toString());
+    const allFiles = productIds.length
+      ? await File.find({ entityType: 'product', entityId: { $in: productIds }, status: 'active' })
+          .select('_id fileName originalName fileType mimeType fileSize url altText caption createdAt makeupPlacement finish defaultOpacity entityId')
+          .lean()
+      : [];
+
+    // Group files by entityId
+    const filesMap = {};
+    allFiles.forEach(f => {
+      const eid = f.entityId;
+      if (!filesMap[eid]) filesMap[eid] = [];
+      filesMap[eid].push(f);
+    });
+
+    const enrichedProducts = products.map(p => ({
+      ...p,
+      files: filesMap[p._id.toString()] || []
+    }));
 
     res.json({
       success: true,
-      data: products,
+      data: enrichedProducts,
       pagination: { page: pageNum, limit: limitNum, total, pages: Math.ceil(total / limitNum) }
     });
   } catch (error) {
@@ -337,17 +336,25 @@ const deleteProduct = async (req, res) => {
 // @access  Private
 const getCategories = async (req, res) => {
   try {
-    const counts = await Product.aggregate([
-      { $group: { _id: '$categoryId', productCount: { $sum: 1 } } }
+    // COSMOS DB COMPATIBLE: no aggregate with $group, count in memory
+    const [allProducts, categories] = await Promise.all([
+      Product.find({}, 'categoryId').lean(),
+      Category.find().lean()
     ]);
-    const countMap = {};
-    counts.forEach(c => { countMap[c._id.toString()] = c.productCount; });
 
-    const categories = await Category.find().sort({ categoryName: 1 });
-    const result = categories.map(cat => ({
-      ...cat.toObject(),
-      count: countMap[cat._id.toString()] || 0
-    }));
+    const countMap = {};
+    allProducts.forEach(p => {
+      const id = p.categoryId?.toString();
+      if (id) countMap[id] = (countMap[id] || 0) + 1;
+    });
+
+    // Sort categories in memory
+    const result = categories
+      .sort((a, b) => (a.categoryName || '').localeCompare(b.categoryName || ''))
+      .map(cat => ({
+        ...cat,
+        count: countMap[cat._id?.toString()] || countMap[cat.categoryId] || 0
+      }));
 
     res.json({ success: true, data: result });
   } catch (error) {
@@ -362,11 +369,15 @@ const createCategory = async (req, res) => {
       return res.status(400).json({ success: false, message: 'categoryName is required' });
     }
 
-    const lastCategory = await Category.findOne().sort({ categoryId: -1 }).lean();
+    // COSMOS DB COMPATIBLE: no .sort() — fetch all, find max in memory
+    const allCategories = await Category.find({}, 'categoryId').lean();
     let nextId = 'C001';
-    if (lastCategory?.categoryId) {
-      const num = parseInt(lastCategory.categoryId.replace('C', ''));
-      nextId = `C${String(num + 1).padStart(3, '0')}`;
+    if (allCategories.length) {
+      const nums = allCategories
+        .map(c => parseInt((c.categoryId || '').replace('C', '')))
+        .filter(n => !isNaN(n));
+      const maxNum = nums.length ? Math.max(...nums) : 0;
+      nextId = `C${String(maxNum + 1).padStart(3, '0')}`;
     }
 
     const category = await Category.create({
@@ -433,12 +444,25 @@ const listPurchases = async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
 
-    const purchases = await Purchase.find()
-      .populate('invoice')
-      .sort({ createdAt: -1 })
+    // COSMOS DB COMPATIBLE: no .populate(), no .sort() — do manually
+    const allPurchases = await Purchase.find()
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
+
+    // Sort in memory
+    allPurchases.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Manual populate invoice
+    const invoiceIds = allPurchases.map(p => p.invoice).filter(Boolean);
+    const invoices = invoiceIds.length ? await Invoice.find({ _id: { $in: invoiceIds } }).lean() : [];
+    const invoiceMap = {};
+    invoices.forEach(inv => { invoiceMap[inv._id.toString()] = inv; });
+
+    const purchases = allPurchases.map(p => ({
+      ...p,
+      invoice: p.invoice ? invoiceMap[p.invoice.toString()] || null : null
+    }));
 
     const total = await Purchase.countDocuments();
 
