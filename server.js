@@ -6,6 +6,7 @@ const bodyParser = require('body-parser');
 const routes = require('./api/routes');
 const path = require('path');
 const errorHandler = require('./api/middlewares/errorHandler');
+const fs = require('fs'); // Added for file logging
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -20,13 +21,48 @@ app.use(cors({
   credentials: true
 }));
 
+// Body parsers MUST come before logging middleware
 app.use(bodyParser.json());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ==================== DEBUGGING MIDDLEWARE (TEMPORARY) ====================
+// This logs EVERY incoming request
+app.use((req, res, next) => {
+  const logEntry = {
+    time: new Date().toISOString(),
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    body: req.body,
+    query: req.query
+  };
+  
+  // Console log
+  console.log("================================");
+  console.log("REQUEST RECEIVED");
+  console.log("METHOD:", req.method);
+  console.log("URL:", req.url);
+  console.log("HEADERS:", JSON.stringify(req.headers, null, 2));
+  console.log("BODY:", JSON.stringify(req.body, null, 2));
+  console.log("QUERY:", JSON.stringify(req.query, null, 2));
+  console.log("================================");
+  
+  // File logging (survives restarts)
+  try {
+    const logPath = '/home/site/wwwroot/request.log';
+    fs.appendFileSync(logPath, JSON.stringify(logEntry) + '\n');
+  } catch (err) {
+    console.error('Failed to write to log file:', err.message);
+  }
+  
+  next();
+});
+
 // ==================== STATIC FILES ====================
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/jem/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', uptime: process.uptime() });
@@ -59,10 +95,12 @@ app.get('*', (req, res) => {
 app.use(errorHandler);
 
 // ==================== START SERVER ====================
-const server = app.listen(port, () => {
-  console.log(`🚀 Server running on http://localhost:${port}`);
+// CRITICAL FIX: Listen on 0.0.0.0 (all interfaces) not localhost
+const server = app.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${port}`);
   console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 API Base: http://localhost:${port}/jem/api`);
+  console.log(`🎯 Listening on 0.0.0.0:${port} (all interfaces)`);
 });
 
 module.exports = app;
