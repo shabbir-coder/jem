@@ -343,27 +343,25 @@ const getMessages = async (req, res) => {
     const { page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // COSMOS DB COMPATIBLE: no .sort(), no .populate() — do manually
-    const allMessages = await Message.find({
+    // _id is ALWAYS indexed, so this works in Cosmos DB
+    const messages = await Message.find({
       $or: [
         { sender: userNumber },
         { receiver: userNumber }
       ]
     })
+    .sort({ createdAt: -1 })
     .skip(skip)
     .limit(parseInt(limit))
     .lean();
 
-    // Sort in memory (descending to get latest, then reverse for chronological)
-    allMessages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    // Manual populate for file
-    const fileIds = allMessages.map(m => m.file).filter(Boolean);
+    // Rest of the code remains same...
+    const fileIds = messages.map(m => m.file).filter(Boolean);
     const files = fileIds.length ? await File.find({ _id: { $in: fileIds } }).lean() : [];
     const fileMap = {};
     files.forEach(f => { fileMap[f._id.toString()] = f; });
 
-    const messages = allMessages.map(m => ({
+    const messagesWithFiles = messages.map(m => ({
       ...m,
       file: m.file ? fileMap[m.file.toString()] || m.file : null
     }));
@@ -375,13 +373,11 @@ const getMessages = async (req, res) => {
       ]
     });
 
-    // Mark messages as read
     await Message.updateMany(
       { sender: userNumber, isRead: false },
       { isRead: true, readAt: new Date() }
     );
 
-    // Reset unread count
     await Contact.findOneAndUpdate(
       { number: userNumber },
       { unreadCount: 0 }
@@ -389,7 +385,7 @@ const getMessages = async (req, res) => {
 
     res.json({
       success: true,
-      data: messages.reverse(), // Return in chronological order
+      data: messagesWithFiles.reverse(),
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
