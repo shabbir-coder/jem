@@ -10,7 +10,7 @@
     "postinstall": "npx puppeteer browsers install chrome"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   },
   "keywords": [],
   "author": "",
