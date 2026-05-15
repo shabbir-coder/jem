@@ -1,31 +1,35 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
 let browserInstance = null;
 
 async function getBrowser() {
   try {
-    // Reuse browser if already connected
-    if (browserInstance && browserInstance.connected) {
+
+    if (browserInstance?.connected) {
       return browserInstance;
     }
 
+    const executablePath = await chromium.executablePath();
+
     browserInstance = await puppeteer.launch({
-      headless: true,
+      executablePath,
+
+      headless: chromium.headless,
+
+      defaultViewport: chromium.defaultViewport,
 
       args: [
+        ...chromium.args,
         '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote'
-      ],
-
-      timeout: 60000
+        '--disable-setuid-sandbox'
+      ]
     });
 
+    console.log('✅ Browser launched');
+
     browserInstance.on('disconnected', () => {
-      console.log('⚠️ Puppeteer browser disconnected');
+      console.log('⚠️ Browser disconnected');
       browserInstance = null;
     });
 
