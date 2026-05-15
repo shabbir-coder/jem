@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { syncAllIndexes } = require('../models');
 
 const connectDB = async () => {
   try {
@@ -21,6 +22,12 @@ const connectDB = async () => {
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     console.log(`📊 Database: ${conn.connection.name}`);
     console.log(`🔌 Connection State: ${conn.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
+    
+    // ==================== SYNC ALL INDEXES ====================
+    console.log('🔄 Starting index synchronization...');
+    await syncAllIndexes();
+    console.log('✅ Index synchronization completed');
+    // =========================================================
     
     // Handle connection events
     mongoose.connection.on('error', (err) => {

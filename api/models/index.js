@@ -199,7 +199,9 @@ const productSchema = new mongoose.Schema({
     syncedAt: { type: Date }
   }
 }, { timestamps: true });
-productSchema.index({ productName: 'text', tags: 'text', categoryName: 'text' });
+productSchema.index({ productName: 1 });
+productSchema.index({ tags: 1 });
+productSchema.index({ categoryName: 1 });
 productSchema.index({ categoryId: 1, status: 1 });
 productSchema.index({ 'price.value': 1 });
 
@@ -251,7 +253,6 @@ const chatSchema = new mongoose.Schema({
 
 chatSchema.index({ sender: 1, receiver: 1, createdAt: -1 });
 chatSchema.index({ instance_id: 1, createdAt: -1 });
-chatSchema.index({ messageId: 1 });
 
 // ==================== CHAT LOGS SCHEMA ====================
 const chatLogsSchema = new mongoose.Schema({
@@ -310,7 +311,6 @@ const purchaseSchema = new mongoose.Schema({
   invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }
 }, { timestamps: true });
 
-purchaseSchema.index({ orderId: 1 });
 purchaseSchema.index({ userNumber: 1, createdAt: -1 });
 
 // ==================== INVOICE SCHEMA ====================
@@ -455,6 +455,9 @@ const campaignLogSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+campaignLogSchema.index({ userId: 1, createdAt: -1 });
+
+
 // ==================== COUNTRY PRICING SCHEMA ====================
 const countryPricingSchema = new mongoose.Schema({
   countryName: { type: String, required: true, trim: true },
@@ -464,6 +467,61 @@ const countryPricingSchema = new mongoose.Schema({
   authenticationMetaCost: { type: Number, required: true, default: 0 },
   profitType: { type: String, enum: ['fixed', 'percentage'], required: true, default: 'fixed' },
 });
+
+
+async function syncAllIndexes() {
+  const models = [
+    { name: 'User', model: User },
+    { name: 'Instance', model: Instance },
+    { name: 'Contact', model: Contact },
+    { name: 'Product', model: Product },
+    { name: 'ProductFile', model: File },
+    { name: 'Message', model: Message },
+    { name: 'Cart', model: Cart },
+    { name: 'Purchase', model: Purchase },
+    { name: 'Invoice', model: Invoice },
+    { name: 'Category', model: Category },
+    { name: 'Template', model: Template },
+    { name: 'Group', model: Group },
+    { name: 'Groupmembers', model: GroupMembers },
+    { name: 'CampaignLog', model: CampaignLog },
+    { name: 'Wallet', model: Wallet },
+    { name: 'CountryPricing', model: CountryPricing }
+  ];
+
+  console.log('🔄 Starting index synchronization for all models...');
+  
+  const results = [];
+  
+  for (const { name, model } of models) {
+    try {
+      await model.syncIndexes();
+      console.log(`✅ ${name}: Indexes synced successfully`);
+      results.push({ model: name, status: 'success' });
+    } catch (error) {
+      console.error(`❌ ${name}: Index sync failed -`, error.message);
+      results.push({ model: name, status: 'failed', error: error.message });
+    }
+  }
+  
+  // Summary
+  const successful = results.filter(r => r.status === 'success').length;
+  const failed = results.filter(r => r.status === 'failed').length;
+  
+  console.log('\n📊 Index Sync Summary:');
+  console.log(`   ✅ Successful: ${successful}/${models.length}`);
+  console.log(`   ❌ Failed: ${failed}/${models.length}`);
+  
+  if (failed > 0) {
+    console.log('\n⚠️  Failed models:');
+    results
+      .filter(r => r.status === 'failed')
+      .forEach(r => console.log(`   - ${r.model}: ${r.error}`));
+  }
+  
+  return results;
+}
+
 
 // ==================== MODELS ====================
 const User = mongoose.model('User', userSchema);
@@ -513,5 +571,6 @@ module.exports = {
   ProductStatus,
   FileStatus,
   MessageType,
-  PaymentStatus
+  PaymentStatus,
+  syncAllIndexes
 };
