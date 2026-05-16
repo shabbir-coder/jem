@@ -1,41 +1,29 @@
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+const { chromium } = require('playwright');
 
 let browserInstance = null;
 
 async function getBrowser() {
+
   try {
 
-    if (browserInstance?.connected) {
+    if (browserInstance) {
       return browserInstance;
     }
 
-    const executablePath = await chromium.executablePath();
-
-    browserInstance = await puppeteer.launch({
-      executablePath,
-
-      headless: chromium.headless,
-
-      defaultViewport: chromium.defaultViewport,
-
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox'
-      ]
+    browserInstance = await chromium.launch({
+      headless: true
     });
-
-    console.log('✅ Browser launched');
 
     browserInstance.on('disconnected', () => {
-      console.log('⚠️ Browser disconnected');
       browserInstance = null;
     });
+
+    console.log('✅ Playwright browser launched');
 
     return browserInstance;
 
   } catch (error) {
+
     console.error('❌ Browser launch error:', error);
 
     browserInstance = null;

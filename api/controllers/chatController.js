@@ -1692,7 +1692,8 @@ async function generateOrderPDF(orderData, contactNumber) {
     const browser = await getBrowser();
 
     // Create page
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    const page = await context.newPage();
 
     // Set content
     await page.setContent(html, {
@@ -1713,8 +1714,7 @@ async function generateOrderPDF(orderData, contactNumber) {
     });
 
     // Cleanup page
-    await page.close();
-
+    await context.close();
     return pdfPath;
 
   } catch (error) {
