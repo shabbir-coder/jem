@@ -5,7 +5,7 @@ const { deductCampaignCost } = require('./walletController');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { getBrowser } = require('../config/browser');
+const pdf = require('html-pdf');
 const handlebars = require('handlebars');
 const {
   getOrCreateWallet,
@@ -1654,73 +1654,53 @@ const sendtoowner = async (req, res) => {
  
 // ===== HELPER: GENERATE PDF =====
 async function generateOrderPDF(orderData, contactNumber) {
-  try {
-    // Template path
-    const templatePath = path.join(
-      process.cwd(),
-      'uploads',
-      'ordertemplate.hbs'
-    );
-
-    if (!fs.existsSync(templatePath)) {
-      throw new Error(`Template not found at ${templatePath}`);
-    }
-
-    // Read template
-    const templateHtml = fs.readFileSync(templatePath, 'utf8');
-
-    // Compile handlebars
-    const compiledTemplate = handlebars.compile(templateHtml);
-
-    // Generate HTML
-    const html = compiledTemplate(orderData);
-
-    // Ensure PDF directory exists
-    const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
-
-    if (!fs.existsSync(pdfDir)) {
-      fs.mkdirSync(pdfDir, { recursive: true });
-    }
-
-    // Generate PDF path
-    const pdfPath = path.join(
-      pdfDir,
-      `order_${contactNumber}_${Date.now()}.pdf`
-    );
-
-    // Get browser
-    const browser = await getBrowser();
-
-    // Create page
-    const context = await browser.newContext();
-    const page = await context.newPage();
-
-    // Set content
-    await page.setContent(html, {
-      waitUntil: 'networkidle0'
-    });
-
-    // Generate PDF
-    await page.pdf({
-      path: pdfPath,
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top: '10mm',
-        right: '10mm',
-        bottom: '10mm',
-        left: '10mm'
+  return new Promise((resolve, reject) => {
+    try {
+      // Read HTML template
+      const templatePath = path.join(process.cwd(), 'uploads', 'ordertemplate.hbs');
+      
+      if (!fs.existsSync(templatePath)) {
+        throw new Error(`Template not found at ${templatePath}`);
       }
-    });
 
-    // Cleanup page
-    await context.close();
-    return pdfPath;
+      const templateHtml = fs.readFileSync(templatePath, 'utf8');
+      // Compile with Handlebars
+      const compiledTemplate = handlebars.compile(templateHtml);
+      const html = compiledTemplate(orderData);
+      // PDF options
+      const options = {
+        format: 'A4',
+        border: {
+          top: '10mm',
+          right: '10mm',
+          bottom: '10mm',
+          left: '10mm'
+        }
+      };
 
-  } catch (error) {
-    console.error('❌ PDF generation error:', error);
-    throw error;
-  }
+      // Generate PDF path
+      const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
+      if (!fs.existsSync(pdfDir)) {
+        fs.mkdirSync(pdfDir, { recursive: true });
+      }
+
+      const pdfPath = path.join(pdfDir, `order_${contactNumber}_${Date.now()}.pdf`);
+
+      // Create PDF
+      pdf.create(html, options).toFile(pdfPath, (err, result) => {
+        if (err) {
+          console.error('PDF generation error:', err);
+          reject(err);
+        } else {
+          resolve(result.filename);
+        }
+      });
+
+    } catch (error) {
+      console.error('PDF preparation error:', error);
+      reject(error);
+    }
+  });
 }
 
 // ===== HELPER: UPLOAD MEDIA TO WHATSAPP (FALLBACK - NOT USED BY DEFAULT) =====
