@@ -5,14 +5,15 @@ const { deductCampaignCost } = require('./walletController');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { getBrowser } = require('../config/browser');
 const handlebars = require('handlebars');
 const {
   getOrCreateWallet,
   buildCostBreakdown,
   generateCampaignId
 } = require('./walletController');
-
+const PdfPrinter = require('pdfmake/build/pdfmake');
+const pdfFonts = require('pdfmake/build/vfs_fonts');
+PdfPrinter.vfs = pdfFonts.pdfMake.vfs;
 
 // @desc    WhatsApp webhook verification
 // @route   GET /api/chats/webhook
@@ -1654,48 +1655,112 @@ const sendtoowner = async (req, res) => {
 };
  
 // ===== HELPER: GENERATE PDF =====
+
 async function generateOrderPDF(orderData, contactNumber) {
-  let page = null;
-
   try {
-    // 1. Read and compile Handlebars template
-    const templatePath = path.join(process.cwd(), 'uploads', 'ordertemplate.hbs');
+    // orderData already has cartItems, contact, subTotal etc — use those directly
+    const { cartItems, contact, subTotal, shipping, grandTotal, orderDate, additionalMessage } = orderData;
 
-    if (!fs.existsSync(templatePath)) {
-      throw new Error(`Template not found at ${templatePath}`);
+    if (!cartItems || !Array.isArray(cartItems)) {
+      throw new Error(`cartItems missing. Received: ${JSON.stringify(orderData)}`);
     }
 
-    const templateHtml = fs.readFileSync(templatePath, 'utf8');
-    const compiledTemplate = handlebars.compile(templateHtml);
-    const html = compiledTemplate(orderData);
+    const tableBody = [
+      [
+        { text: 'Product', style: 'tableHeader' },
+        { text: 'Category', style: 'tableHeader' },
+        { text: 'Qty', style: 'tableHeader' },
+        { text: 'Price', style: 'tableHeader' },
+        { text: 'Total', style: 'tableHeader' }
+      ],
+      ...cartItems.map(item => [
+        { text: item.productName || '' },
+        { text: item.categoryName || 'N/A' },
+        { text: String(item.quantity) },
+        { text: `INR ${item.price}` },
+        { text: `INR ${item.total}` }
+      ])
+    ];
 
-    // 2. Prepare output directory
+    const docDefinition = {
+      content: [
+        { text: 'Order Invoice', style: 'header' },
+        { text: `Date: ${orderDate}`, margin: [0, 0, 0, 5] },
+        {
+          text: `Delivery Type: ${contact.isHomeDelivery ? 'Home Delivery' : 'Store Pickup'}`,
+          margin: [0, 0, 0, 5]
+        },
+
+        // Customer details
+        { text: 'Customer Details', style: 'subheader' },
+        { text: `Name: ${contact.name}`, margin: [0, 2] },
+        { text: `Phone: ${contact.number}`, margin: [0, 2] },
+        ...(contact.isHomeDelivery ? [
+          { text: `Address: ${contact.address}`, margin: [0, 2] },
+          { text: `City: ${contact.city},  State: ${contact.state},  PIN: ${contact.pinCode}`, margin: [0, 2] }
+        ] : []),
+
+        // Items table
+        { text: 'Order Items', style: 'subheader' },
+        {
+          table: {
+            headerRows: 1,
+            widths: ['*', 'auto', 'auto', 'auto', 'auto'],
+            body: tableBody
+          },
+          layout: 'lightHorizontalLines',
+          margin: [0, 0, 0, 15]
+        },
+
+        // Totals
+        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 1 }], margin: [0, 0, 0, 8] },
+        {
+          columns: [
+            { text: '' },
+            {
+              width: 'auto',
+              stack: [
+                { text: `Subtotal:      INR ${subTotal}`, margin: [0, 2] },
+                ...(contact.isHomeDelivery
+                  ? [{ text: `Shipping:      INR ${shipping}`, margin: [0, 2] }]
+                  : []),
+                { text: `Total Amount:  INR ${grandTotal}`, style: 'total', margin: [0, 5] }
+              ]
+            }
+          ]
+        },
+
+        // Additional message
+        ...(additionalMessage ? [
+          { text: 'Customer Message', style: 'subheader' },
+          { text: additionalMessage, margin: [0, 0, 0, 10] }
+        ] : [])
+      ],
+
+      styles: {
+        header:      { fontSize: 20, bold: true, margin: [0, 0, 0, 10] },
+        subheader:   { fontSize: 14, bold: true, margin: [0, 10, 0, 5] },
+        tableHeader: { bold: true, fillColor: '#eeeeee' },
+        total:       { bold: true, fontSize: 13 }
+      },
+
+      defaultStyle: { font: 'Roboto' }
+    };
+
     const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
-    if (!fs.existsSync(pdfDir)) {
-      fs.mkdirSync(pdfDir, { recursive: true });
-    }
+    if (!fs.existsSync(pdfDir)) fs.mkdirSync(pdfDir, { recursive: true });
 
     const pdfFileName = `order_${contactNumber}_${Date.now()}.pdf`;
     const pdfPath     = path.join(pdfDir, pdfFileName);
 
-    // 3. Get shared browser instance (from your existing browserHelper)
-    const browser = await getBrowser();
-    page = await browser.newPage();
-
-    // 4. Set HTML content and wait for it to fully load
-    await page.setContent(html, { waitUntil: 'networkidle' });
-
-    // 5. Generate PDF
-    await page.pdf({
-      path: pdfPath,
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top:    '10mm',
-        right:  '10mm',
-        bottom: '10mm',
-        left:   '10mm'
-      }
+    await new Promise((resolve, reject) => {
+      const pdfDoc = PdfPrinter.createPdf(docDefinition);
+      pdfDoc.getBuffer((buffer) => {
+        fs.writeFile(pdfPath, buffer, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
     });
 
     console.log(`✅ PDF generated: ${pdfPath}`);
@@ -1704,14 +1769,9 @@ async function generateOrderPDF(orderData, contactNumber) {
   } catch (error) {
     console.error('❌ PDF generation error:', error);
     throw error;
-
-  } finally {
-    // Always close the page, but keep browser alive for reuse
-    if (page) {
-      await page.close().catch(() => {});
-    }
   }
 }
+
 // ===== HELPER: UPLOAD MEDIA TO WHATSAPP (FALLBACK - NOT USED BY DEFAULT) =====
 // Uncomment and use this function if direct link doesn't work
 /*
