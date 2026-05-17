@@ -5,7 +5,7 @@ const { deductCampaignCost } = require('./walletController');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const pdf = require('html-pdf');
+const htmlPdf = require('html-pdf-node');
 const handlebars = require('handlebars');
 const {
   getOrCreateWallet,
@@ -493,6 +493,7 @@ const sendMessage = async (req, res) => {
     });
   }
 };
+
 // @desc    Send media message
 // @route   POST /api/chats/send-media
 // @access  Private
@@ -1138,7 +1139,7 @@ const messageToOwnerTemplate = async (req, res) => {
         quantity:     item.quantity,
         price:        item.price?.value || 0,
         total:        item.total_price,
-        categoryName: 'N/A'
+        categoryName: item.category || 'N/A'
       })),
       mediaUrls:         mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl]) : [],
       subTotal:          subTotal.toFixed(2),
@@ -1654,53 +1655,60 @@ const sendtoowner = async (req, res) => {
  
 // ===== HELPER: GENERATE PDF =====
 async function generateOrderPDF(orderData, contactNumber) {
-  return new Promise((resolve, reject) => {
-    try {
-      // Read HTML template
-      const templatePath = path.join(process.cwd(), 'uploads', 'ordertemplate.hbs');
-      
-      if (!fs.existsSync(templatePath)) {
-        throw new Error(`Template not found at ${templatePath}`);
-      }
-
-      const templateHtml = fs.readFileSync(templatePath, 'utf8');
-      // Compile with Handlebars
-      const compiledTemplate = handlebars.compile(templateHtml);
-      const html = compiledTemplate(orderData);
-      // PDF options
-      const options = {
-        format: 'A4',
-        border: {
-          top: '10mm',
-          right: '10mm',
-          bottom: '10mm',
-          left: '10mm'
-        }
-      };
-
-      // Generate PDF path
-      const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
-      if (!fs.existsSync(pdfDir)) {
-        fs.mkdirSync(pdfDir, { recursive: true });
-      }
-
-      const pdfPath = path.join(pdfDir, `order_${contactNumber}_${Date.now()}.pdf`);
-
-      // Create PDF
-      pdf.create(html, options).toFile(pdfPath, (err, result) => {
-        if (err) {
-          console.error('PDF generation error:', err);
-          reject(err);
-        } else {
-          resolve(result.filename);
-        }
-      });
-
-    } catch (error) {
-      console.error('PDF preparation error:', error);
-      reject(error);
+  try {
+    // 1. Read and compile Handlebars template
+    const templatePath = path.join(process.cwd(), 'uploads', 'ordertemplate.hbs');
+    
+    if (!fs.existsSync(templatePath)) {
+      throw new Error(`Template not found at ${templatePath}`);
     }
-  });
+ 
+    const templateHtml = fs.readFileSync(templatePath, 'utf8');
+    const compiledTemplate = handlebars.compile(templateHtml);
+    const html = compiledTemplate(orderData);
+ 
+    // 2. PDF generation options
+    const options = {
+      format: 'A4',
+      printBackground: true,
+      margin: {
+        top: '10mm',
+        right: '10mm',
+        bottom: '10mm',
+        left: '10mm'
+      },
+      // Azure-safe Chromium args
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    };
+ 
+    // 3. Prepare output directory
+    const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
+    if (!fs.existsSync(pdfDir)) {
+      fs.mkdirSync(pdfDir, { recursive: true });
+    }
+ 
+    const pdfFileName = `order_${contactNumber}_${Date.now()}.pdf`;
+    const pdfPath = path.join(pdfDir, pdfFileName);
+ 
+    // 4. Generate PDF using html-pdf-node
+    const file = { content: html };
+    const pdfBuffer = await htmlPdf.generatePdf(file, options);
+ 
+    // 5. Save to disk
+    fs.writeFileSync(pdfPath, pdfBuffer);
+ 
+    console.log(`✅ PDF generated: ${pdfPath}`);
+    return pdfPath;
+ 
+  } catch (error) {
+    console.error('❌ PDF generation error:', error);
+    throw error;
+  }
 }
 
 // ===== HELPER: UPLOAD MEDIA TO WHATSAPP (FALLBACK - NOT USED BY DEFAULT) =====
