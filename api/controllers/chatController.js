@@ -13,7 +13,7 @@ const {
 } = require('./walletController');
 const PdfPrinter = require('pdfmake/build/pdfmake');
 const pdfFonts = require('pdfmake/build/vfs_fonts');
-PdfPrinter.vfs = pdfFonts.pdfMake.vfs;
+PdfPrinter.vfs = pdfFonts.pdfMake?.vfs ?? pdfFonts.vfs ?? pdfFonts;
 
 // @desc    WhatsApp webhook verification
 // @route   GET /api/chats/webhook
