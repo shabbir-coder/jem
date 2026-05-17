@@ -1,5 +1,4 @@
-process.env.PLAYWRIGHT_BROWSERS_PATH =
-  '/home/site/wwwroot/ms-playwright';
+process.env.PLAYWRIGHT_BROWSERS_PATH = '/home/site/wwwroot/ms-playwright';
 
 const { chromium } = require('playwright');
 

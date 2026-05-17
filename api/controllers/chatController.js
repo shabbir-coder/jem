@@ -5,7 +5,7 @@ const { deductCampaignCost } = require('./walletController');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const htmlPdf = require('html-pdf-node');
+const { getBrowser } = require('../config/browser');
 const handlebars = require('handlebars');
 const {
   getOrCreateWallet,
@@ -950,74 +950,74 @@ const generateOrderId = async () => {
   }
 };
 
-const saveOwnerNotificationMessage = async ({
-  instance,
-  ownerNumber,
-  pdfPublicUrl,
-  pdfFileName,
-  captionText,
-  messageId,          // returned by Meta API
-  campaignLogId = null,
-  templateId    = null
-}) => {
-  // 1. File record (type = document, so the chat UI can render it)
-  const fileDoc = await File.create({
-    fileName:     pdfFileName,
-    originalName: pdfFileName,
-    fileType:     'document',
-    mimeType:     'application/pdf',
-    fileSize:     0,
-    url:          pdfPublicUrl,
-    path:         pdfPublicUrl,
-    caption:      captionText,
-    entityType:   'message'
-  });
- 
-  // 2. Message record — matches chatSchema fields
-  //    messageType / templateId / campaignId are extra fields that exist on the
-  //    processContact() messages; they're safe to include even if schema doesn't
-  //    have them (Mongoose silently ignores unknown fields unless strict:true is
-  //    overridden — but processContact already does the same thing successfully).
-  const message = await Message.create({
-    messageId,
-    sender:      instance.number.toString(),
-    receiver:    ownerNumber,
-    instance_id: instance.numberId,
-    text:        captionText,
-    type:        'document',
-    file:        fileDoc._id,
-    ...(templateId    && { templateId }),
-    ...(campaignLogId && { campaignId: campaignLogId }),
-    ...(templateId    && { messageType: 'template' }),
-    status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
-  });
- 
-  // 3. ChatLog (same as processContact)
-  await ChatLog.create({
-    sender:      instance.number.toString(),
-    receiver:    ownerNumber,
-    instance_id: instance.numberId,
-    usedFile:    fileDoc._id,
-    action:      'sent',
-    metadata: {
-      ...(templateId && { templateId }),
-      source: 'order-notification'
-    }
-  });
- 
-  // 4. Update / upsert the owner contact so conversation appears in chat
-  await Contact.findOneAndUpdate(
-    { number: ownerNumber },
-    {
-      $set:         { lastMessageAt: new Date() },
-      $setOnInsert: { number: ownerNumber }
-    },
-    { upsert: true, new: true }
-  );
- 
-  return message;
-};
- 
+  const saveOwnerNotificationMessage = async ({
+    instance,
+    ownerNumber,
+    pdfPublicUrl,
+    pdfFileName,
+    captionText,
+    messageId,          // returned by Meta API
+    campaignLogId = null,
+    templateId    = null
+  }) => {
+    // 1. File record (type = document, so the chat UI can render it)
+    const fileDoc = await File.create({
+      fileName:     pdfFileName,
+      originalName: pdfFileName,
+      fileType:     'document',
+      mimeType:     'application/pdf',
+      fileSize:     0,
+      url:          pdfPublicUrl,
+      path:         pdfPublicUrl,
+      caption:      captionText,
+      entityType:   'message'
+    });
+  
+    // 2. Message record — matches chatSchema fields
+    //    messageType / templateId / campaignId are extra fields that exist on the
+    //    processContact() messages; they're safe to include even if schema doesn't
+    //    have them (Mongoose silently ignores unknown fields unless strict:true is
+    //    overridden — but processContact already does the same thing successfully).
+    const message = await Message.create({
+      messageId,
+      sender:      instance.number.toString(),
+      receiver:    ownerNumber,
+      instance_id: instance.numberId,
+      text:        captionText,
+      type:        'document',
+      file:        fileDoc._id,
+      ...(templateId    && { templateId }),
+      ...(campaignLogId && { campaignId: campaignLogId }),
+      ...(templateId    && { messageType: 'template' }),
+      status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
+    });
+  
+    // 3. ChatLog (same as processContact)
+    await ChatLog.create({
+      sender:      instance.number.toString(),
+      receiver:    ownerNumber,
+      instance_id: instance.numberId,
+      usedFile:    fileDoc._id,
+      action:      'sent',
+      metadata: {
+        ...(templateId && { templateId }),
+        source: 'order-notification'
+      }
+    });
+  
+    // 4. Update / upsert the owner contact so conversation appears in chat
+    await Contact.findOneAndUpdate(
+      { number: ownerNumber },
+      {
+        $set:         { lastMessageAt: new Date() },
+        $setOnInsert: { number: ownerNumber }
+      },
+      { upsert: true, new: true }
+    );
+  
+    return message;
+  };
+  
 // ─────────────────────────────────────────────────────────────────────────────
 // INTERNAL HELPER — deduct wallet without checking balance (order notifications
 // must go through even if wallet is zero / negative).
@@ -1655,62 +1655,63 @@ const sendtoowner = async (req, res) => {
  
 // ===== HELPER: GENERATE PDF =====
 async function generateOrderPDF(orderData, contactNumber) {
+  let page = null;
+
   try {
     // 1. Read and compile Handlebars template
     const templatePath = path.join(process.cwd(), 'uploads', 'ordertemplate.hbs');
-    
+
     if (!fs.existsSync(templatePath)) {
       throw new Error(`Template not found at ${templatePath}`);
     }
- 
+
     const templateHtml = fs.readFileSync(templatePath, 'utf8');
     const compiledTemplate = handlebars.compile(templateHtml);
     const html = compiledTemplate(orderData);
- 
-    // 2. PDF generation options
-    const options = {
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top: '10mm',
-        right: '10mm',
-        bottom: '10mm',
-        left: '10mm'
-      },
-      // Azure-safe Chromium args
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
-    };
- 
-    // 3. Prepare output directory
+
+    // 2. Prepare output directory
     const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
     if (!fs.existsSync(pdfDir)) {
       fs.mkdirSync(pdfDir, { recursive: true });
     }
- 
+
     const pdfFileName = `order_${contactNumber}_${Date.now()}.pdf`;
-    const pdfPath = path.join(pdfDir, pdfFileName);
- 
-    // 4. Generate PDF using html-pdf-node
-    const file = { content: html };
-    const pdfBuffer = await htmlPdf.generatePdf(file, options);
- 
-    // 5. Save to disk
-    fs.writeFileSync(pdfPath, pdfBuffer);
- 
+    const pdfPath     = path.join(pdfDir, pdfFileName);
+
+    // 3. Get shared browser instance (from your existing browserHelper)
+    const browser = await getBrowser();
+    page = await browser.newPage();
+
+    // 4. Set HTML content and wait for it to fully load
+    await page.setContent(html, { waitUntil: 'networkidle' });
+
+    // 5. Generate PDF
+    await page.pdf({
+      path: pdfPath,
+      format: 'A4',
+      printBackground: true,
+      margin: {
+        top:    '10mm',
+        right:  '10mm',
+        bottom: '10mm',
+        left:   '10mm'
+      }
+    });
+
     console.log(`✅ PDF generated: ${pdfPath}`);
     return pdfPath;
- 
+
   } catch (error) {
     console.error('❌ PDF generation error:', error);
     throw error;
+
+  } finally {
+    // Always close the page, but keep browser alive for reuse
+    if (page) {
+      await page.close().catch(() => {});
+    }
   }
 }
-
 // ===== HELPER: UPLOAD MEDIA TO WHATSAPP (FALLBACK - NOT USED BY DEFAULT) =====
 // Uncomment and use this function if direct link doesn't work
 /*
