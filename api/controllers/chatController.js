@@ -1658,23 +1658,63 @@ const sendtoowner = async (req, res) => {
 
 async function generateOrderPDF(orderData, contactNumber) {
   try {
-    // orderData already has cartItems, contact, subTotal etc — use those directly
-    const { cartItems, contact, subTotal, shipping, grandTotal, orderDate, additionalMessage } = orderData;
+    const { cartItems, contact, subTotal, shipping, grandTotal, orderDate, additionalMessage, mediaUrls } = orderData;
 
     if (!cartItems || !Array.isArray(cartItems)) {
       throw new Error(`cartItems missing. Received: ${JSON.stringify(orderData)}`);
     }
 
+    // ── Fetch media images as base64 ──────────────────────────────────────
+    const fetchImageAsBase64 = async (url) => {
+      try {
+        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+        const mimeType  = response.headers['content-type'] || 'image/jpeg';
+        const base64    = Buffer.from(response.data).toString('base64');
+        return { success: true, dataUrl: `data:${mimeType};base64,${base64}` };
+      } catch (e) {
+        console.warn(`⚠️ Could not fetch image: ${url}`, e.message);
+        return { success: false, url };
+      }
+    };
+
+    const mediaContent = [];
+    if (mediaUrls && mediaUrls.length > 0) {
+      mediaContent.push({ text: 'Media Attachments', style: 'subheader' });
+
+      for (const url of mediaUrls) {
+        const result = await fetchImageAsBase64(url);
+        if (result.success) {
+          // Show image embedded in PDF
+          mediaContent.push({
+            image: result.dataUrl,
+            width: 300,
+            margin: [0, 4, 0, 4],
+            alignment: 'center'
+          });
+        } else {
+          // Fallback: show as text link
+          mediaContent.push({
+            text: `📎 Attachment: ${url}`,
+            link: url,
+            color: '#1976D2',
+            fontSize: 10,
+            margin: [0, 4, 0, 4]
+          });
+        }
+      }
+    }
+
+    // ── Table ─────────────────────────────────────────────────────────────
     const tableBody = [
       [
-        { text: 'Product', style: 'tableHeader' },
+        { text: 'Product',  style: 'tableHeader' },
         { text: 'Category', style: 'tableHeader' },
-        { text: 'Qty', style: 'tableHeader' },
-        { text: 'Price', style: 'tableHeader' },
-        { text: 'Total', style: 'tableHeader' }
+        { text: 'Qty',      style: 'tableHeader' },
+        { text: 'Price',    style: 'tableHeader' },
+        { text: 'Total',    style: 'tableHeader' }
       ],
       ...cartItems.map(item => [
-        { text: item.productName || '' },
+        { text: item.productName  || '' },
         { text: item.categoryName || 'N/A' },
         { text: String(item.quantity) },
         { text: `INR ${item.price}` },
@@ -1682,6 +1722,7 @@ async function generateOrderPDF(orderData, contactNumber) {
       ])
     ];
 
+    // ── Doc definition ────────────────────────────────────────────────────
     const docDefinition = {
       content: [
         { text: 'Order Invoice', style: 'header' },
@@ -1693,7 +1734,7 @@ async function generateOrderPDF(orderData, contactNumber) {
 
         // Customer details
         { text: 'Customer Details', style: 'subheader' },
-        { text: `Name: ${contact.name}`, margin: [0, 2] },
+        { text: `Name:  ${contact.name}`,   margin: [0, 2] },
         { text: `Phone: ${contact.number}`, margin: [0, 2] },
         ...(contact.isHomeDelivery ? [
           { text: `Address: ${contact.address}`, margin: [0, 2] },
@@ -1720,11 +1761,11 @@ async function generateOrderPDF(orderData, contactNumber) {
             {
               width: 'auto',
               stack: [
-                { text: `Subtotal:      INR ${subTotal}`, margin: [0, 2] },
+                { text: `Subtotal:     INR ${subTotal}`, margin: [0, 2] },
                 ...(contact.isHomeDelivery
-                  ? [{ text: `Shipping:      INR ${shipping}`, margin: [0, 2] }]
+                  ? [{ text: `Shipping:     INR ${shipping}`, margin: [0, 2] }]
                   : []),
-                { text: `Total Amount:  INR ${grandTotal}`, style: 'total', margin: [0, 5] }
+                { text: `Total Amount: INR ${grandTotal}`, style: 'total', margin: [0, 5] }
               ]
             }
           ]
@@ -1734,12 +1775,15 @@ async function generateOrderPDF(orderData, contactNumber) {
         ...(additionalMessage ? [
           { text: 'Customer Message', style: 'subheader' },
           { text: additionalMessage, margin: [0, 0, 0, 10] }
-        ] : [])
+        ] : []),
+
+        // Media attachments (images or links)
+        ...mediaContent
       ],
 
       styles: {
-        header:      { fontSize: 20, bold: true, margin: [0, 0, 0, 10] },
-        subheader:   { fontSize: 14, bold: true, margin: [0, 10, 0, 5] },
+        header:      { fontSize: 20, bold: true,  margin: [0, 0, 0, 10] },
+        subheader:   { fontSize: 14, bold: true,  margin: [0, 10, 0, 5] },
         tableHeader: { bold: true, fillColor: '#eeeeee' },
         total:       { bold: true, fontSize: 13 }
       },
@@ -1747,6 +1791,7 @@ async function generateOrderPDF(orderData, contactNumber) {
       defaultStyle: { font: 'Roboto' }
     };
 
+    // ── Save PDF ──────────────────────────────────────────────────────────
     const pdfDir = path.join(process.cwd(), 'uploads', 'pdfs');
     if (!fs.existsSync(pdfDir)) fs.mkdirSync(pdfDir, { recursive: true });
 
