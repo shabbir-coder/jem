@@ -204,6 +204,7 @@ const handleIncomingMessage = async (message, value) => {
 const handleMessageStatus = async (status) => {
   try {
     // COSMOS DB COMPATIBLE: fetch, modify in memory, then save (avoids $slice in $push)
+    console.log('status', status)
     const msg = await Message.findOne({
       messageId: status.id,
       'status.status': { $ne: status.status } // avoid duplicates
