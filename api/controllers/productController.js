@@ -96,21 +96,36 @@ const createProduct = async (req, res) => {
   }
 };
 
+const getSalesCountMap = async (products) => {
+  const objectIds = products.map(p => p._id);   // already ObjectId, no conversion needed
+
+  const results = await Purchase.aggregate([
+    { $unwind: '$items' },
+    { $match: { 'items.product': { $in: objectIds } } },
+    { $group: { _id: '$items.product', totalSold: { $sum: '$items.quantity' } } }
+  ]);
+
+  const map = {};
+  results.forEach(r => { map[r._id.toString()] = r.totalSold; });
+  return map;
+};
+
 // @desc    Get all products with filters and search
 // @route   GET /api/products
 // @access  Private
+
 const getProducts = async (req, res) => {
   try {
     const {
       search,
       categoryId,
       status,
-      makeupPlacement,      // ← new filter
+      makeupPlacement,
       minPrice,
       maxPrice,
       page      = 1,
       limit     = 20,
-      sortBy    = 'createdAt',
+      sortBy    = 'createdAt',   // 'bestseller' | 'latest' | 'createdAt' | 'price' etc.
       sortOrder = 'desc'
     } = req.query;
 
@@ -125,17 +140,15 @@ const getProducts = async (req, res) => {
     }
     if (categoryId)      match.categoryId      = categoryId;
     if (status)          match.status          = status;
-    if (makeupPlacement) match.makeupPlacement = makeupPlacement;   // ← new
+    if (makeupPlacement) match.makeupPlacement = makeupPlacement;
 
     const pageNum  = parseInt(page);
     const limitNum = parseInt(limit);
     const skip     = (pageNum - 1) * limitNum;
 
-    // COSMOS DB COMPATIBLE: no $lookup with let, no $toDouble in $expr
-    // Handle price filter in memory after fetch
     let allProducts = await Product.find(match).lean();
 
-    // Apply price filter in memory
+    // ── Price filter (in-memory, CosmosDB-compatible) ────────────────────────
     if (minPrice || maxPrice) {
       allProducts = allProducts.filter(p => {
         const val = parseFloat(p.price?.value);
@@ -146,20 +159,38 @@ const getProducts = async (req, res) => {
       });
     }
 
-    // Sort in memory
-    const sortDir = sortOrder === 'asc' ? 1 : -1;
-    allProducts.sort((a, b) => {
-      const aVal = a[sortBy] ?? '';
-      const bVal = b[sortBy] ?? '';
-      if (aVal < bVal) return -sortDir;
-      if (aVal > bVal) return sortDir;
-      return 0;
-    });
+    // ── Bestseller: fetch sales counts only when needed ──────────────────────
+    let salesMap = {};
+    if (sortBy === 'bestseller') {
+      salesMap = await getSalesCountMap(allProducts);     // ← pass full objects
+      allProducts.forEach(p => {
+        p._salesCount = salesMap[p._id.toString()] || 0;
+      });
+    }
 
+    // ── Sort ─────────────────────────────────────────────────────────────────
+    const sortDir = sortOrder === 'asc' ? 1 : -1;
+
+    if (sortBy === 'bestseller') {
+      allProducts.sort((a, b) => (b._salesCount - a._salesCount));   // always desc
+    } else if (sortBy === 'latest') {
+      allProducts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } else {
+      allProducts.sort((a, b) => {
+        const aVal = a[sortBy] ?? '';
+        const bVal = b[sortBy] ?? '';
+        if (aVal < bVal) return -sortDir;
+        if (aVal > bVal) return sortDir;
+        return 0;
+      });
+    }
+
+    // ── Paginate ─────────────────────────────────────────────────────────────
     const total    = allProducts.length;
     const products = allProducts.slice(skip, skip + limitNum);
 
-    // Manual file join (replaces $lookup with let)
+
+    // ── Files join ───────────────────────────────────────────────────────────
     const productIds = products.map(p => p._id.toString());
     const allFiles = productIds.length
       ? await File.find({ entityType: 'product', entityId: { $in: productIds }, status: 'active' })
@@ -167,12 +198,10 @@ const getProducts = async (req, res) => {
           .lean()
       : [];
 
-    // Group files by entityId
     const filesMap = {};
     allFiles.forEach(f => {
-      const eid = f.entityId;
-      if (!filesMap[eid]) filesMap[eid] = [];
-      filesMap[eid].push(f);
+      if (!filesMap[f.entityId]) filesMap[f.entityId] = [];
+      filesMap[f.entityId].push(f);
     });
 
     const enrichedProducts = products.map(p => ({
