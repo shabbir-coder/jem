@@ -3,39 +3,40 @@ const { syncAllIndexes } = require('../models');
 
 const connectDB = async () => {
   try {
-    // Cosmos DB compatible connection options
+
     const options = {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      retryWrites: false,              // CRITICAL for Cosmos DB
-      maxIdleTimeMS: 120000,            // Keep connections alive
-      serverSelectionTimeoutMS: 30000, // 30 second timeout
-      socketTimeoutMS: 45000,           // 45 second socket timeout
-      family: 4,                        // Use IPv4
-      // Add these for Cosmos DB compatibility
-      ssl: true,
-      tlsAllowInvalidCertificates: false
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      family: 4
     };
 
-    const conn = await mongoose.connect(process.env.MONGODB_URI, options);
-    
+    const conn = await mongoose.connect(
+      process.env.MONGODB_URI,
+      options
+    );
+
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     console.log(`📊 Database: ${conn.connection.name}`);
-    console.log(`🔌 Connection State: ${conn.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
-    
+    console.log(
+      `🔌 Connection State: ${
+        conn.connection.readyState === 1
+          ? 'Connected'
+          : 'Disconnected'
+      }`
+    );
+
     // ==================== SYNC ALL INDEXES ====================
     console.log('🔄 Starting index synchronization...');
     await syncAllIndexes();
     console.log('✅ Index synchronization completed');
     // =========================================================
-    
-    // Handle connection events
+
     mongoose.connection.on('error', (err) => {
       console.error('❌ MongoDB connection error:', err);
     });
 
     mongoose.connection.on('disconnected', () => {
-      console.warn('⚠️  MongoDB disconnected');
+      console.warn('⚠️ MongoDB disconnected');
     });
 
     mongoose.connection.on('reconnected', () => {
@@ -43,9 +44,10 @@ const connectDB = async () => {
     });
 
   } catch (error) {
+
     console.error(`❌ MongoDB Connection Error: ${error.message}`);
     console.error('Full error:', error);
-    // Don't exit process in production, let Azure handle restarts
+
     if (process.env.NODE_ENV !== 'production') {
       process.exit(1);
     }

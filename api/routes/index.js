@@ -14,6 +14,7 @@ const templateRoutes = require('./templateRoutes');
 const groupRoutes = require('./groupRoutes');
 const walletRoutes = require('./walletRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
+const discountRoutes = require('./discountRoutes');
 
 // Mount routes
 router.use('/auth', authRoutes);
@@ -27,6 +28,7 @@ router.use('/templates', templateRoutes);
 router.use('/groups', groupRoutes);
 router.use('/wallet', walletRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/discounts', discountRoutes);
 
 // Health check
 router.get('/health', (req, res) => {

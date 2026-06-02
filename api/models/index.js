@@ -469,6 +469,72 @@ const countryPricingSchema = new mongoose.Schema({
 });
 
 
+const discountTierSchema = new mongoose.Schema({
+  minCart: { type: Number, required: true, min: 0 },
+  value:   { type: Number, required: true, min: 0 }
+}, { _id: false });
+ 
+const discountScopeSchema = new mongoose.Schema({
+  type: {
+    type: String,
+    enum: ['all', 'products', 'categories', 'customers', 'locations'],
+    default: 'all'
+  },
+  selectedIds:    [{ type: String }],
+  selectedLabels: [{ type: String }]
+}, { _id: false });
+ 
+const discountLimitsSchema = new mongoose.Schema({
+  maxUses:         { type: Number, default: null },
+  maxPerUser:      { type: Number, default: null },
+  combineOther:    { type: Boolean, default: false },
+  firstOrderOnly:  { type: Boolean, default: false },
+  newCustomerOnly: { type: Boolean, default: false }
+}, { _id: false });
+ 
+const discountSchema = new mongoose.Schema({
+  campaignName: { type: String, required: true, trim: true, maxlength: 60 },
+  startDate:    { type: String },   // kept as ISO date-string to match frontend
+  endDate:      { type: String },
+  couponCode:   { type: String, trim: true, uppercase: true, default: '' },
+ 
+  discountType: {
+    type: String,
+    enum: ['percent', 'flat'],
+    required: true,
+    default: 'percent'
+  },
+  pricingModel: {
+    type: String,
+    enum: ['simple', 'tiered'],
+    required: true,
+    default: 'simple'
+  },
+ 
+  simpleDiscount: {
+    value:   { type: Number, default: null },
+    minCart: { type: Number, default: null }
+  },
+  tiers: [discountTierSchema],
+ 
+  scope:  { type: discountScopeSchema,  default: () => ({ type: 'all', selectedIds: [], selectedLabels: [] }) },
+  limits: { type: discountLimitsSchema, default: () => ({}) },
+ 
+  tnc: { type: String, default: '' },
+ 
+  status: {
+    type: String,
+    enum: ['active', 'inactive', 'expired'],
+    default: 'active'
+  },
+ 
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { timestamps: true });
+ 
+discountSchema.index({ status: 1 });
+discountSchema.index({ couponCode: 1 });
+discountSchema.index({ createdBy: 1, createdAt: -1 });
+
 async function syncAllIndexes() {
   const models = [
     { name: 'User', model: User },
@@ -486,7 +552,8 @@ async function syncAllIndexes() {
     { name: 'Groupmembers', model: GroupMembers },
     { name: 'CampaignLog', model: CampaignLog },
     { name: 'Wallet', model: Wallet },
-    { name: 'CountryPricing', model: CountryPricing }
+    { name: 'CountryPricing', model: CountryPricing },
+    { name: 'Discount', model: Discount }
   ];
 
   console.log('🔄 Starting index synchronization for all models...');
@@ -547,6 +614,9 @@ const CampaignLog = mongoose.model('CampaignLog', campaignLogSchema);
 const Wallet = mongoose.model('Wallet', walletSchema);
 const CountryPricing = mongoose.model('CountryPricing', countryPricingSchema);
 
+const Discount = mongoose.model('Discount', discountSchema);
+
+
 module.exports = {
   User,
   Instance,
@@ -572,5 +642,6 @@ module.exports = {
   FileStatus,
   MessageType,
   PaymentStatus,
+  Discount,
   syncAllIndexes
 };
