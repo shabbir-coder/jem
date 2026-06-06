@@ -20,13 +20,16 @@ const createValidation = [
     .notEmpty().withMessage('Campaign name is required.')
     .isLength({ max: 60 }).withMessage('Campaign name must be at most 60 characters.'),
   body('discountType')
-    .isIn(['percent', 'flat']).withMessage('discountType must be "percent" or "flat".'),
+    .isIn(['percent', 'flat', 'freeShipping']).withMessage('discountType must be "percent", "flat", or "freeShipping".'),
   body('pricingModel')
     .isIn(['simple', 'tiered']).withMessage('pricingModel must be "simple" or "tiered".'),
   body('simpleDiscount.value')
-    .if((value, { req }) => req.body.pricingModel === 'simple')
-    .notEmpty().withMessage('Discount value is required for simple model.')
-    .isFloat({ min: 0 }).withMessage('Discount value must be a positive number.'),
+  .if((value, { req }) =>
+    req.body.pricingModel === 'simple' &&
+    req.body.discountType !== 'freeShipping'   // ← add this
+  )
+  .notEmpty().withMessage('Discount value is required for simple model.')
+  .isFloat({ min: 0 }).withMessage('Discount value must be a positive number.'),
   validate
 ];
 
@@ -36,10 +39,14 @@ const updateValidation = [
     .isLength({ max: 60 }).withMessage('Campaign name must be at most 60 characters.'),
   body('discountType')
     .optional()
-    .isIn(['percent', 'flat']).withMessage('discountType must be "percent" or "flat".'),
+    .isIn(['percent', 'flat', 'freeShipping']).withMessage('discountType must be "percent", "flat", or "freeShipping".'),
   body('pricingModel')
     .optional()
     .isIn(['simple', 'tiered']).withMessage('pricingModel must be "simple" or "tiered".'),
+  body('simpleDiscount.value')
+    .optional()
+    .if((value, { req }) => req.body.discountType !== 'freeShipping')
+    .isFloat({ min: 0 }).withMessage('Discount value must be a positive number.'),
   validate
 ];
 

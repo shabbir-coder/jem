@@ -500,7 +500,7 @@ const discountSchema = new mongoose.Schema({
  
   discountType: {
     type: String,
-    enum: ['percent', 'flat'],
+    enum: ['percent', 'flat', 'freeShipping'],
     required: true,
     default: 'percent'
   },
