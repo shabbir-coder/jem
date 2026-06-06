@@ -11,7 +11,9 @@ const createDiscount = async (req, res) => {
     const {
       campaignName, startDate, endDate, couponCode,
       discountType, pricingModel,
-      simpleDiscount, tiers, scope, limits, tnc
+      simpleDiscount, tiers,
+      scopes,          // ← NEW: array of scope conditions
+      limits, tnc
     } = req.body;
 
     // Duplicate coupon-code guard (only when a code is provided)
@@ -37,7 +39,7 @@ const createDiscount = async (req, res) => {
       pricingModel,
       simpleDiscount: simpleDiscount || { value: null, minCart: null },
       tiers: pricingModel === 'tiered' ? (tiers || []) : [],
-      scope: scope || { type: 'all', selectedIds: [], selectedLabels: [] },
+      scopes: Array.isArray(scopes) ? scopes : [],   // ← save scopes array
       limits: limits || {},
       tnc: tnc || '',
       createdBy: req.user._id
@@ -85,8 +87,7 @@ const getDiscounts = async (req, res) => {
     const pageNum  = parseInt(page,  10);
     const limitNum = parseInt(limit, 10);
     const skip     = (pageNum - 1) * limitNum;
-
-    const sortDir = sortOrder === 'asc' ? 1 : -1;
+    const sortDir  = sortOrder === 'asc' ? 1 : -1;
 
     const [discounts, total] = await Promise.all([
       Discount.find(filter)
@@ -101,7 +102,7 @@ const getDiscounts = async (req, res) => {
       success: true,
       data: discounts,
       pagination: {
-        page: pageNum,
+        page:  pageNum,
         limit: limitNum,
         total,
         pages: Math.ceil(total / limitNum)
@@ -146,10 +147,12 @@ const updateDiscount = async (req, res) => {
     const {
       campaignName, startDate, endDate, couponCode,
       discountType, pricingModel,
-      simpleDiscount, tiers, scope, limits, tnc, status
+      simpleDiscount, tiers,
+      scopes,          // ← NEW
+      limits, tnc, status
     } = req.body;
 
-    // Duplicate coupon-code guard (exclude the current doc)
+    // Duplicate coupon-code guard (exclude current doc)
     if (couponCode && couponCode.trim()) {
       const upper = couponCode.trim().toUpperCase();
       const conflict = await Discount.findOne({
@@ -166,17 +169,17 @@ const updateDiscount = async (req, res) => {
       discount.couponCode = upper;
     }
 
-    if (campaignName  !== undefined) discount.campaignName  = campaignName;
-    if (startDate     !== undefined) discount.startDate     = startDate;
-    if (endDate       !== undefined) discount.endDate       = endDate;
-    if (discountType  !== undefined) discount.discountType  = discountType;
-    if (pricingModel  !== undefined) discount.pricingModel  = pricingModel;
+    if (campaignName   !== undefined) discount.campaignName   = campaignName;
+    if (startDate      !== undefined) discount.startDate      = startDate;
+    if (endDate        !== undefined) discount.endDate        = endDate;
+    if (discountType   !== undefined) discount.discountType   = discountType;
+    if (pricingModel   !== undefined) discount.pricingModel   = pricingModel;
     if (simpleDiscount !== undefined) discount.simpleDiscount = simpleDiscount;
-    if (tiers         !== undefined) discount.tiers         = pricingModel === 'tiered' ? tiers : [];
-    if (scope         !== undefined) discount.scope         = scope;
-    if (limits        !== undefined) discount.limits        = { ...discount.limits.toObject?.() ?? discount.limits, ...limits };
-    if (tnc           !== undefined) discount.tnc           = tnc;
-    if (status        !== undefined) discount.status        = status;
+    if (tiers          !== undefined) discount.tiers          = pricingModel === 'tiered' ? tiers : [];
+    if (Array.isArray(scopes))        discount.scopes         = scopes;   // ← save scopes array
+    if (limits         !== undefined) discount.limits         = { ...discount.limits.toObject?.() ?? discount.limits, ...limits };
+    if (tnc            !== undefined) discount.tnc            = tnc;
+    if (status         !== undefined) discount.status         = status;
 
     await discount.save();
 
@@ -221,7 +224,7 @@ const toggleDiscountStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Discount campaign not found.' });
     }
 
-    const { status } = req.body; // 'active' | 'inactive' | 'expired'
+    const { status } = req.body;
     if (!['active', 'inactive', 'expired'].includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid status value.' });
     }
@@ -241,7 +244,7 @@ const toggleDiscountStatus = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// @desc    Validate a coupon code (public endpoint for checkout)
+// @desc    Validate a coupon code at checkout
 // @route   POST /api/discounts/validate
 // @access  Private
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,7 +273,6 @@ const validateCoupon = async (req, res) => {
       return res.status(400).json({ success: false, message: 'This coupon has expired.' });
     }
 
-    // Usage-limit check (extend as needed with a redemption counter)
     // Calculate discount amount
     let discountAmount = 0;
     const cart = Number(cartTotal) || 0;
@@ -288,7 +290,6 @@ const validateCoupon = async (req, res) => {
         ? (cart * val) / 100
         : val;
     } else {
-      // Tiered: pick the best tier the cart qualifies for
       const eligibleTiers = (discount.tiers || [])
         .filter(t => cart >= t.minCart)
         .sort((a, b) => b.minCart - a.minCart);

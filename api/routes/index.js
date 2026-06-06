@@ -15,6 +15,7 @@ const groupRoutes = require('./groupRoutes');
 const walletRoutes = require('./walletRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
 const discountRoutes = require('./discountRoutes');
+const locationRoutes = require('./locationRoutes');
 
 // Mount routes
 router.use('/auth', authRoutes);
@@ -29,6 +30,7 @@ router.use('/groups', groupRoutes);
 router.use('/wallet', walletRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/discounts', discountRoutes);
+router.use('/locations', locationRoutes);
 
 // Health check
 router.get('/health', (req, res) => {

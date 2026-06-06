@@ -474,16 +474,6 @@ const discountTierSchema = new mongoose.Schema({
   value:   { type: Number, required: true, min: 0 }
 }, { _id: false });
  
-const discountScopeSchema = new mongoose.Schema({
-  type: {
-    type: String,
-    enum: ['all', 'products', 'categories', 'customers', 'locations'],
-    default: 'all'
-  },
-  selectedIds:    [{ type: String }],
-  selectedLabels: [{ type: String }]
-}, { _id: false });
- 
 const discountLimitsSchema = new mongoose.Schema({
   maxUses:         { type: Number, default: null },
   maxPerUser:      { type: Number, default: null },
@@ -492,6 +482,16 @@ const discountLimitsSchema = new mongoose.Schema({
   newCustomerOnly: { type: Boolean, default: false }
 }, { _id: false });
  
+const discountScopeConditionSchema = new mongoose.Schema({
+  type: {
+    type: String,
+    enum: ['products', 'categories', 'customers', 'locations'],
+    required: true
+  },
+  selectedIds:    [{ type: String }],
+  selectedLabels: [{ type: String }]
+}, { _id: false });
+
 const discountSchema = new mongoose.Schema({
   campaignName: { type: String, required: true, trim: true, maxlength: 60 },
   startDate:    { type: String },   // kept as ISO date-string to match frontend
@@ -517,7 +517,10 @@ const discountSchema = new mongoose.Schema({
   },
   tiers: [discountTierSchema],
  
-  scope:  { type: discountScopeSchema,  default: () => ({ type: 'all', selectedIds: [], selectedLabels: [] }) },
+  scopes: {
+    type: [discountScopeConditionSchema],
+    default: []   // empty = applies to ALL — no restriction
+  },
   limits: { type: discountLimitsSchema, default: () => ({}) },
  
   tnc: { type: String, default: '' },
