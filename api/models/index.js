@@ -308,10 +308,19 @@ const purchaseSchema = new mongoose.Schema({
   orderStatus: { type: String, enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'], default: 'pending' },
   statusLog: [statusLogSchema],
   instance_id: { type: String, required: true },
-  invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }
+  invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+  appliedDiscounts: [{ 
+    campaignId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Discount', default: null },
+    campaignName:   { type: String, default: null },
+    couponCode:     { type: String, default: null },
+    discountType:   { type: String, default: null },   // 'percent' | 'flat' | 'freeShipping'
+    discountAmount: { type: Number, default: 0 },
+    freeShipping:   { type: Boolean, default: false }
+  }],
 }, { timestamps: true });
 
 purchaseSchema.index({ userNumber: 1, createdAt: -1 });
+purchaseSchema.index({ 'appliedDiscounts.campaignId': 1 });
 
 // ==================== INVOICE SCHEMA ====================
 const itemSchema = new mongoose.Schema({
