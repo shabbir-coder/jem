@@ -232,20 +232,22 @@ const applyDiscount = async (req, res) => {
     // ── 1. Gather candidate campaigns ─────────────────────────────────────────
     let candidates = [];
 
+    // Always fetch auto-apply campaigns
+    const autoApplyCandidates = await Discount.find({ couponCode: '', status: 'active' }).lean();
+    candidates = [...autoApplyCandidates];
+
+    // Additionally, if a coupon code was provided, fetch and add that campaign too
     if (couponCode && couponCode.trim()) {
-      // Explicit code: single campaign
-      const found = await Discount.findOne({
+      const couponCandidate = await Discount.findOne({
         couponCode: couponCode.trim().toUpperCase(),
         status: 'active'
       }).lean();
 
-      if (!found) {
+      if (!couponCandidate) {
         return res.status(404).json({ success: false, message: 'Invalid or expired coupon code.' });
       }
-      candidates = [found];
-    } else {
-      // Auto-apply: all active campaigns with no coupon code
-      candidates = await Discount.find({ couponCode: '', status: 'active' }).lean();
+
+      candidates.push(couponCandidate);
     }
 
     // ── 2. Filter by date validity ────────────────────────────────────────────
@@ -256,11 +258,10 @@ const applyDiscount = async (req, res) => {
     });
 
     if (!candidates.length) {
-      return res.status(404).json({
+      return res.status(200).json({
         success: false,
-        message: couponCode
-          ? 'This coupon is not currently active (check dates).'
-          : 'No active auto-apply discounts available right now.'
+        message: 'No active discounts found for your cart.',
+        data: { appliedDiscounts: [], skippedDiscounts: [] }
       });
     }
 
@@ -377,10 +378,9 @@ const applyDiscount = async (req, res) => {
 
     // ── 4. Nothing applied ────────────────────────────────────────────────────
     if (!appliedResults.length) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
-        message: 'No discounts could be applied to your cart.',
-        data: { appliedDiscounts: [], skippedDiscounts: skippedResults }
+        message: 'No active discounts found for your cart.',
       });
     }
 
@@ -393,7 +393,6 @@ const applyDiscount = async (req, res) => {
     const finalAmount      = Math.max(cartSubtotal - cappedDiscount, 0);
 
     // ── 6. Per-product merged summary ─────────────────────────────────────────
-    // Merge itemBreakdowns across all applied campaigns for a per-product view
     const productMap = new Map();
     for (const item of cartItems) {
       const key = String(item.productId);
@@ -434,22 +433,14 @@ const applyDiscount = async (req, res) => {
       success: true,
       message: summaryMsg,
       data: {
-        // Summary
         cartSubtotal:    parseFloat(cartSubtotal.toFixed(2)),
         totalDiscount:   parseFloat(cappedDiscount.toFixed(2)),
         finalAmount:     parseFloat(finalAmount.toFixed(2)),
         hasFreeShipping,
 
-        // Per-campaign breakdown
         appliedDiscounts: appliedResults,
-
-        // Campaigns that didn't apply and why
         skippedDiscounts: skippedResults,
-
-        // Per-product merged view (useful for cart display)
-        productSummary: Array.from(productMap.values()),
-
-        // Array to store in Purchase.appliedDiscounts
+        productSummary:   Array.from(productMap.values()),
         appliedDiscountsEmbed: appliedResults.map(r => r.appliedDiscountEmbed)
       }
     });
