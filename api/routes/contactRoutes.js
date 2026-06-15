@@ -10,6 +10,7 @@ const { uploadSingle, handleUploadError } = require('../middlewares/upload');
 const {
   createContact,
   getContacts,
+  filterContacts,
   getContact,
   updateContact,
   updateContactStatus,
@@ -22,9 +23,7 @@ const {
 
 // ==================== VALIDATIONS ====================
 const contactValidation = [
-  body('number')
-    .notEmpty()
-    .withMessage('Contact number is required'),
+  body('number').notEmpty().withMessage('Contact number is required'),
   validate
 ];
 
@@ -35,33 +34,27 @@ router.route('/')
   .get(protect, getContacts)
   .post(protect, contactValidation, createContact);
 
+// Filter contacts by purchase date / location (for gift card & discount scope UIs)
+// GET /api/contacts/filter?last7days=1 | lastMonth=1 | fromDate=&toDate= | cities[]=X | states[]=Y
+router.get('/filter', protect, filterContacts);
+
 // Bulk Upload (Excel)
-router.post(
-  '/bulk-upload',
-  protect,
-  uploadSingle,
-  handleUploadError,
-  saveContactsInBulk
-);
+router.post('/bulk-upload', protect, uploadSingle, handleUploadError, saveContactsInBulk);
 
 // Get blocked users list from WhatsApp
 router.get('/blocked', protect, getBlockedUsers);
- 
+
 // Update contact status
 router.patch('/:id/status', protect, updateContactStatus);
- 
-// Block user on WhatsApp
-router.get('/:id/block', protect, blockUser);
- 
-// Unblock user on WhatsApp
+
+// Block / Unblock user on WhatsApp
+router.get('/:id/block',   protect, blockUser);
 router.get('/:id/unblock', protect, unblockUser);
- 
 
 // Single Contact
 router.route('/:id')
   .get(protect, getContact)
   .put(protect, contactValidation, updateContact)
   .delete(protect, deleteContact);
-  
 
 module.exports = router;
