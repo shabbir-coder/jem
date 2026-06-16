@@ -1,6 +1,6 @@
 // ==================== controllers/discountController.js ====================
 const { Discount, Purchase } = require('../models');
-
+const { GiftCard } = require('./giftCardController');
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,20 +146,20 @@ function buildItemBreakdown(eligibleItems, discountAmount, eligibleSubtotal) {
 // Returns null if eligible, or an error string if not.
 // ─────────────────────────────────────────────────────────────────────────────
 async function checkCustomerEligibility(discount, { customerId, customerNumber }) {
-  // Customers scope
-  const customerScope = discount.scopes?.find(s => s.type === 'customers');
-  if (customerScope?.selectedIds?.length) {
-    const allowed = customerId
-      ? customerScope.selectedIds.includes(String(customerId))
-      : false;
-    if (!allowed) return 'This coupon is not valid for your account.';
+  // ── Gift card: customer already validated at fetch time, skip scope check ──
+  if (!discount._isGiftCard) {
+    const customerScope = discount.scopes?.find(s => s.type === 'customers');
+    if (customerScope?.selectedIds?.length) {
+      const allowed = customerId
+        ? customerScope.selectedIds.includes(String(customerId))
+        : false;
+      if (!allowed) return 'This coupon is not valid for your account.';
+    }
   }
 
   // newCustomerOnly
   if (discount.limits?.newCustomerOnly && customerNumber) {
-    const paidOrders = await Purchase.countDocuments({
-      userNumber: customerNumber, paymentStatus: 'paid'
-    });
+    const paidOrders = await Purchase.countDocuments({ userNumber: customerNumber });
     if (paidOrders > 0) return 'This coupon is only valid for new customers.';
   }
 
@@ -187,7 +187,7 @@ async function checkCustomerEligibility(discount, { customerId, customerNumber }
       return `You have already used this coupon the maximum allowed times (${discount.limits.maxPerUser}).`;
   }
 
-  return null; // eligible
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,22 +232,86 @@ const applyDiscount = async (req, res) => {
     // ── 1. Gather candidate campaigns ─────────────────────────────────────────
     let candidates = [];
 
-    // Always fetch auto-apply campaigns
+    // 1a. Always fetch auto-apply campaigns (empty couponCode)
     const autoApplyCandidates = await Discount.find({ couponCode: '', status: 'active' }).lean();
     candidates = [...autoApplyCandidates];
 
-    // Additionally, if a coupon code was provided, fetch and add that campaign too
-    if (couponCode && couponCode.trim()) {
-      const couponCandidate = await Discount.findOne({
-        couponCode: couponCode.trim().toUpperCase(),
+    // 1b. Auto-fetch active gift cards for this customer number
+    if (customerNumber) {
+    
+      const activeGiftCards = await GiftCard.find({
+        recipientNumber: "+" + customerNumber,
         status: 'active'
       }).lean();
 
-      if (!couponCandidate) {
-        return res.status(404).json({ success: false, message: 'Invalid or expired coupon code.' });
-      }
+      if (activeGiftCards.length) {
+        const giftCardDiscountIds = activeGiftCards
+          .map(gc => gc.discountDocId)
+          .filter(Boolean);
 
-      candidates.push(couponCandidate);
+        const giftCardDiscounts = await Discount.find({
+          _id: { $in: giftCardDiscountIds },
+          status: 'active'
+        }).lean();
+
+        // Tag them so scope check knows to skip customer ID validation
+        giftCardDiscounts.forEach(d => { d._isGiftCard = true; });
+        candidates.push(...giftCardDiscounts);
+      }
+    }
+
+    // 1c. If a coupon code was provided, fetch that campaign too
+    if (couponCode && couponCode.trim()) {
+      const upper = couponCode.trim().toUpperCase();
+
+      // Check if it's a gift card coupon first
+      const giftCardByCoupon = await GiftCard.findOne({
+        couponCode: upper,
+        status: 'active'
+      }).lean();
+
+      if (giftCardByCoupon) {
+        // Validate it belongs to this customer
+        if (customerNumber && giftCardByCoupon.recipientNumber !== customerNumber) {
+          return res.status(403).json({
+            success: false,
+            message: 'This gift card coupon is not valid for your account.'
+          });
+        }
+
+        // Load its linked Discount doc
+        if (giftCardByCoupon.discountDocId) {
+          const gcDiscount = await Discount.findOne({
+            _id: giftCardByCoupon.discountDocId,
+            status: 'active'
+          }).lean();
+
+          if (!gcDiscount) {
+            return res.status(404).json({ success: false, message: 'Invalid or expired gift card.' });
+          }
+
+          // Avoid duplicate if already auto-fetched in step 1b
+          const alreadyAdded = candidates.some(c => String(c._id) === String(gcDiscount._id));
+          if (!alreadyAdded) {
+            gcDiscount._isGiftCard = true;
+            candidates.push(gcDiscount);
+          }
+        }
+      } else {
+        // Regular coupon code
+        const couponCandidate = await Discount.findOne({
+          couponCode: upper,
+          status: 'active'
+        }).lean();
+
+        if (!couponCandidate) {
+          return res.status(404).json({ success: false, message: 'Invalid or expired coupon code.' });
+        }
+
+        // Avoid duplicate
+        const alreadyAdded = candidates.some(c => String(c._id) === String(couponCandidate._id));
+        if (!alreadyAdded) candidates.push(couponCandidate);
+      }
     }
 
     // ── 2. Filter by date validity ────────────────────────────────────────────
@@ -268,16 +332,14 @@ const applyDiscount = async (req, res) => {
     // ── 3. Evaluate each campaign ─────────────────────────────────────────────
     const customerCtx = { customerId, customerNumber };
 
-    const appliedResults  = [];   // campaigns that passed all checks
-    const skippedResults  = [];   // campaigns that failed with reason
+    const appliedResults  = [];
+    const skippedResults  = [];
 
-    let nonCombinableLocked = false;  // true once a non-combinable campaign is applied
+    let nonCombinableLocked = false;
 
     for (const discount of candidates) {
 
-      // 3a. combineOther gate:
-      //     - If we already applied a non-combinable campaign, block everything else
-      //     - If this campaign itself is non-combinable and something is already applied, block it
+      // 3a. combineOther gate
       if (nonCombinableLocked) {
         skippedResults.push({
           campaignId:   discount._id,
@@ -348,6 +410,7 @@ const applyDiscount = async (req, res) => {
         discountType:  discount.discountType,
         pricingModel:  discount.pricingModel,
         freeShipping,
+        isGiftCard:    discount._isGiftCard || false,
 
         eligibleItems:   eligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
         ineligibleItems: ineligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
@@ -359,7 +422,6 @@ const applyDiscount = async (req, res) => {
         tierApplied: tierApplied,
         nextTier:    getNextTierHint(discount, eligibleSubtotal),
 
-        // Embed object ready to push into Purchase.appliedDiscounts array
         appliedDiscountEmbed: {
           campaignId:     discount._id,
           campaignName:   discount.campaignName,
@@ -385,25 +447,24 @@ const applyDiscount = async (req, res) => {
     }
 
     // ── 5. Aggregate totals ───────────────────────────────────────────────────
-    const cartSubtotal     = cartItems.reduce((s, i) => s + toNum(i.price) * (i.quantity || 1), 0);
-    const totalDiscount    = appliedResults.reduce((s, r) => s + r.discountAmount, 0);
-    const hasFreeShipping  = appliedResults.some(r => r.freeShipping);
-    // Cap total discount at cart subtotal
-    const cappedDiscount   = Math.min(totalDiscount, cartSubtotal);
-    const finalAmount      = Math.max(cartSubtotal - cappedDiscount, 0);
+    const cartSubtotal    = cartItems.reduce((s, i) => s + toNum(i.price) * (i.quantity || 1), 0);
+    const totalDiscount   = appliedResults.reduce((s, r) => s + r.discountAmount, 0);
+    const hasFreeShipping = appliedResults.some(r => r.freeShipping);
+    const cappedDiscount  = Math.min(totalDiscount, cartSubtotal);
+    const finalAmount     = Math.max(cartSubtotal - cappedDiscount, 0);
 
     // ── 6. Per-product merged summary ─────────────────────────────────────────
     const productMap = new Map();
     for (const item of cartItems) {
       const key = String(item.productId);
       productMap.set(key, {
-        productId:    item.productId,
-        productName:  item.productName,
-        price:        toNum(item.price),
-        quantity:     item.quantity || 1,
-        itemTotal:    parseFloat((toNum(item.price) * (item.quantity || 1)).toFixed(2)),
-        totalDiscount: 0,
-        finalItemTotal: 0,
+        productId:        item.productId,
+        productName:      item.productName,
+        price:            toNum(item.price),
+        quantity:         item.quantity || 1,
+        itemTotal:        parseFloat((toNum(item.price) * (item.quantity || 1)).toFixed(2)),
+        totalDiscount:    0,
+        finalItemTotal:   0,
         appliedCampaigns: []
       });
     }
@@ -412,7 +473,7 @@ const applyDiscount = async (req, res) => {
       for (const bd of result.itemBreakdown) {
         const entry = productMap.get(String(bd.productId));
         if (!entry) continue;
-        entry.totalDiscount   = parseFloat((entry.totalDiscount + bd.discountApplied).toFixed(2));
+        entry.totalDiscount = parseFloat((entry.totalDiscount + bd.discountApplied).toFixed(2));
         entry.appliedCampaigns.push({
           campaignName:    result.campaignName,
           discountApplied: bd.discountApplied
@@ -438,9 +499,9 @@ const applyDiscount = async (req, res) => {
         finalAmount:     parseFloat(finalAmount.toFixed(2)),
         hasFreeShipping,
 
-        appliedDiscounts: appliedResults,
-        skippedDiscounts: skippedResults,
-        productSummary:   Array.from(productMap.values()),
+        appliedDiscounts:      appliedResults,
+        skippedDiscounts:      skippedResults,
+        productSummary:        Array.from(productMap.values()),
         appliedDiscountsEmbed: appliedResults.map(r => r.appliedDiscountEmbed)
       }
     });

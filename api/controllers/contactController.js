@@ -14,13 +14,8 @@ async function buildContactFilter(query) {
     status
   } = query;
 
-  const cities  = [].concat(query['cities[]']  || query.cities  || []);
-  const states  = [].concat(query['states[]']  || query.states  || []);
-
   const parseBoolean = value =>
-  value === true ||
-  value === 'true' ||
-  value === '1';
+    value === true || value === 'true' || value === '1';
 
   const filter = {};
 
@@ -37,7 +32,6 @@ async function buildContactFilter(query) {
   if (status) filter.status = status;
 
   // ── Location filters ────────────────────────────────────────────────────────
-
   const cityList = Array.isArray(query.cities)
     ? query.cities
     : Array.isArray(query['cities[]'])
@@ -70,70 +64,40 @@ async function buildContactFilter(query) {
     };
   }
 
-  // ── Purchase-date filters ───────────────────────────────────────────────────
+  // ── Purchase filter (ALWAYS applied — only purchasers are valid contacts) ───
+  const isLast7Days = parseBoolean(last7days);
+  const isLastMonth = parseBoolean(lastMonth);
 
-    const isLast7Days = parseBoolean(last7days);
-    const isLastMonth = parseBoolean(lastMonth);
+  // Base purchase filter — always require at least one paid purchase
+  const purchaseFilter = {};
 
-    const hasPurchaseFilter =
-      isLast7Days ||
-      isLastMonth ||
-      (fromDate && toDate);
+  // Narrow by date range if any date filter is active
+  if (isLast7Days) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 7);
+    purchaseFilter.createdAt = { $gte: startDate };
 
-    if (hasPurchaseFilter) {
-      let purchaseFilter = {
-        paymentStatus: 'paid'
-      };
+  } else if (isLastMonth) {
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - 1);
+    purchaseFilter.createdAt = { $gte: startDate };
 
-      if (isLast7Days) {
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - 7);
+  } else if (fromDate && toDate) {
+    const startDate = new Date(fromDate);
+    const endDate   = new Date(toDate);
+    endDate.setHours(23, 59, 59, 999);
+    purchaseFilter.createdAt = { $gte: startDate, $lte: endDate };
+  }
 
-        purchaseFilter.createdAt = {
-          $gte: startDate
-        };
-      } else if (isLastMonth) {
-        const startDate = new Date();
-        startDate.setMonth(startDate.getMonth() - 1);
+  const buyerNumbers = await Purchase.distinct('userNumber', purchaseFilter);
 
-        purchaseFilter.createdAt = {
-          $gte: startDate
-        };
-      } else if (fromDate && toDate) {
-        const startDate = new Date(fromDate);
+  // If no buyers exist at all, return nothing
+  if (!buyerNumbers.length) {
+    filter._id = { $in: [] };
+    return filter;
+  }
 
-        const endDate = new Date(toDate);
-        endDate.setHours(23, 59, 59, 999);
-
-        purchaseFilter.createdAt = {
-          $gte: startDate,
-          $lte: endDate
-        };
-      }
-
-      // Get unique customer numbers who purchased in the selected range
-      const buyerNumbers = await Purchase.distinct(
-        'userNumber',
-        purchaseFilter
-      );
-
-      if (!buyerNumbers.length) {
-        filter._id = { $in: [] };
-      } else {
-        // Merge with existing number filter if any
-        if (filter.number?.$in) {
-          filter.number.$in = filter.number.$in.filter(num =>
-            buyerNumbers.includes(
-              num instanceof RegExp ? num.source.replace(/^\^|\$$/g, '') : num
-            )
-          );
-        } else {
-          filter.number = {
-            $in: buyerNumbers
-          };
-        }
-      }
-    }
+  filter.number = { $in: buyerNumbers };
 
   return filter;
 }
