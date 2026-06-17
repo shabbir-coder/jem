@@ -239,10 +239,14 @@ const applyDiscount = async (req, res) => {
     // 1b. Auto-fetch active gift cards for this customer number
     if (customerNumber) {
     
-      const activeGiftCards = await GiftCard.find({
-        recipientNumber: "+" + customerNumber,
-        status: 'active'
-      }).lean();
+    const normalizedNumber = customerNumber.replace(/^\+/, '');
+
+    const activeGiftCards = await GiftCard.find({
+      recipientNumber: {
+        $in: [normalizedNumber, `+${normalizedNumber}`]
+      },
+      status: 'active'
+    }).lean();
 
       if (activeGiftCards.length) {
         const giftCardDiscountIds = activeGiftCards
