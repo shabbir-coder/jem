@@ -1,6 +1,95 @@
 // ==================== controllers/productController.js ====================
-const { Product, File, Category, FileStatus, Purchase, Invoice } = require('../models');
+const { Product, File, Category, FileStatus, Purchase, Invoice, Discount } = require('../models');
 const axios = require('axios');
+
+// ─── Storefront discount helpers ─────────────────────────────────────────────
+
+/**
+ * Fetch all discounts that are safe to display on product listings/detail
+ * without customer or cart context:
+ *   • active + within date window
+ *   • auto-apply (no couponCode required)
+ *   • simple pricing model (tiered can't show a single price; shown on cart)
+ *   • not freeShipping (nothing to render as a price cut on a card)
+ *   • no customers / locations scope (depends on context we don't have here)
+ */
+async function loadStorefrontDiscounts() {
+  const now = new Date();
+  const candidates = await Discount.find({
+    status:       'active',
+    couponCode:   '',
+    pricingModel: 'simple',
+    discountType: { $ne: 'freeShipping' }
+  }).lean();
+
+  console.log(`loadStorefrontDiscounts: ${candidates.length} candidates found`);
+  console.log(`loadStorefrontDiscounts: filtering by date and scope...`, candidates);
+
+  return candidates.filter(d => {
+    if (d.startDate && new Date(d.startDate) > now) return false;
+    if (d.endDate   && new Date(d.endDate)   < now) return false;
+    if ((d.scopes || []).some(s => s.type === 'customers' || s.type === 'locations')) return false;
+    if (d.simpleDiscount?.value == null) return false;
+    return true;
+  });
+}
+
+/**
+ * Given a loaded list of storefront discounts and a product, return the best
+ * (most savings) matching discount — or null if none apply.
+ *
+ * Mirrors the AND-scope logic from splitItemsByScope in discountController:
+ * a discount must satisfy EVERY scope type it declares.
+ *
+ * minCart > 0 discounts are excluded here: a product price doesn't represent
+ * the cart subtotal, so we can't guarantee the threshold is met. They still
+ * fire correctly through /api/discounts/apply at checkout.
+ */
+function getBestDiscount(discounts, product) {
+  let best = null;
+
+  console.log(`getBestDiscount: checking ${discounts}`);
+  console.log(`getBestDiscount: product ${product._id} price ${product.price?.value ?? product.price}`);
+  for (const d of discounts) {
+    // Skip if a cart minimum is required — can't verify on a product card
+    if (d.simpleDiscount.minCart > 0) continue;
+
+    const productScope  = (d.scopes || []).find(s => s.type === 'products');
+    const categoryScope = (d.scopes || []).find(s => s.type === 'categories');
+
+    const productOk  = !productScope?.selectedIds?.length
+      || productScope.selectedIds.includes(String(product._id));
+    const categoryOk = !categoryScope?.selectedIds?.length
+      || categoryScope.selectedIds.includes(String(product.categoryId));
+
+    if (!productOk || !categoryOk) continue;
+
+    const price = parseFloat(product.price?.value ?? product.price) || 0;
+    const discountedPrice = d.discountType === 'percent'
+      ? price - (price * d.simpleDiscount.value) / 100
+      : Math.max(price - d.simpleDiscount.value, 0);
+
+    const rounded = Math.round(discountedPrice * 100) / 100;
+
+    if (!best || rounded < best.discountedPrice) {
+      best = {
+        campaignId:      String(d._id),
+        campaignName:    d.campaignName,
+        discountType:    d.discountType,
+        value:           d.simpleDiscount.value,
+        originalPrice:   price,
+        discountedPrice: rounded,
+        badgeLabel:      d.discountType === 'percent'
+          ? `${d.simpleDiscount.value}% OFF`
+          : `₹${d.simpleDiscount.value} OFF`
+      };
+    }
+  }
+
+  console.log(`getBestDiscount: ${best ? 'found' : 'none'} for product ${product._id}`);
+
+  return best;
+}
 
 // ─── Allowed makeup placement values (mirrors the frontend options) ─────────
 const VALID_MAKEUP_PLACEMENTS = [
@@ -190,6 +279,10 @@ const getProducts = async (req, res) => {
     const products = allProducts.slice(skip, skip + limitNum);
 
 
+    // ── Discount join (single DB query for all matching storefront discounts) ─
+    const storefrontDiscounts = await loadStorefrontDiscounts();
+
+    console.log('storefrontDiscounts', storefrontDiscounts)
     // ── Files join ───────────────────────────────────────────────────────────
     const productIds = products.map(p => p._id.toString());
     const allFiles = productIds.length
@@ -198,6 +291,7 @@ const getProducts = async (req, res) => {
           .lean()
       : [];
 
+    console.log(`getProducts: ${allFiles.length} files found for ${productIds.length} products`);
     const filesMap = {};
     allFiles.forEach(f => {
       if (!filesMap[f.entityId]) filesMap[f.entityId] = [];
@@ -206,8 +300,10 @@ const getProducts = async (req, res) => {
 
     const enrichedProducts = products.map(p => ({
       ...p,
-      files: filesMap[p._id.toString()] || []
+      files:    filesMap[p._id.toString()] || [],
+      discount: getBestDiscount(storefrontDiscounts, p) // null if none apply
     }));
+
 
     res.json({
       success: true,
@@ -234,7 +330,10 @@ const getProduct = async (req, res) => {
       status:     'active'
     }).lean();
 
-    res.json({ success: true, data: { ...product, files } });
+    const storefrontDiscounts = await loadStorefrontDiscounts();
+    const discount = getBestDiscount(storefrontDiscounts, product);
+
+    res.json({ success: true, data: { ...product, files, discount } });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
