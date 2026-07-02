@@ -811,7 +811,7 @@ const runLLMAgentAndReply = async ({
     const llmRes = await axios.post(
       `${process.env.LLM_API}/api/ecommerce/message`,
       payload,
-      { timeout: 30000 }
+      { timeout: 100000 }
     );
 
 
@@ -1668,7 +1668,7 @@ async function generateOrderPDF(orderData, contactNumber) {
     // ── Fetch media images as base64 ──────────────────────────────────────
     const fetchImageAsBase64 = async (url) => {
       try {
-        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+        const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 100000 });
         const mimeType  = response.headers['content-type'] || 'image/jpeg';
         const base64    = Buffer.from(response.data).toString('base64');
         return { success: true, dataUrl: `data:${mimeType};base64,${base64}` };
