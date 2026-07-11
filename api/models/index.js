@@ -547,6 +547,16 @@ discountSchema.index({ status: 1 });
 discountSchema.index({ couponCode: 1 });
 discountSchema.index({ createdBy: 1, createdAt: -1 });
 
+const pendingLLMRequestSchema = new mongoose.Schema({
+  requestId:   { type: String, required: true, unique: true },
+  sender:      { type: String, required: true },
+  instanceId:  { type: String, required: true },   // instance._id.toString()
+  numberId:    { type: String, required: true },   // instance.numberId, needed to send the reply
+  status:      { type: String, enum: ['pending', 'completed', 'failed', 'expired'], default: 'pending' },
+  createdAt:   { type: Date, default: Date.now, expires: 60 * 60 * 6 } // TTL index, auto-cleans after 6h
+});
+
+
 async function syncAllIndexes() {
   const models = [
     { name: 'User', model: User },
@@ -628,6 +638,7 @@ const CountryPricing = mongoose.model('CountryPricing', countryPricingSchema);
 
 const Discount = mongoose.model('Discount', discountSchema);
 
+const PendingLLMRequest = mongoose.model('PendingLLMRequest', pendingLLMRequestSchema);
 
 module.exports = {
   User,
@@ -655,5 +666,6 @@ module.exports = {
   MessageType,
   PaymentStatus,
   Discount,
+  PendingLLMRequest,
   syncAllIndexes
 };

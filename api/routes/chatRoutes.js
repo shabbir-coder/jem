@@ -14,7 +14,8 @@ const {
   reactToMessage,
   sendBulkTemplate,
   getUnreadCount,
-  uploadFile
+  uploadFile,
+  llmCallback
 } = require('../controllers/chatController');
 const { uploadMultiple, handleUploadError } = require('../middlewares/upload');
 
@@ -63,6 +64,10 @@ router.post('/sendBulkMessage', protect, sendBulkTemplate);
 router.post('/send-media', protect, sendMediaValidation, sendMediaMessage);
 router.post('/reply', protect, replyValidation, replyToMessage);
 router.post('/react', protect, reactValidation, reactToMessage);
+
+
+router.post('/llm-callback', llmCallback);
+
 
 router.route('/file') 
   .post(protect, uploadMultiple, handleUploadError, uploadFile);

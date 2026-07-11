@@ -1,5 +1,5 @@
 // ==================== controllers/chatController.js ====================
-const { Message, Contact, ChatLog, File, Instance, MessageStatus, MessageType,   Group,GroupMembers ,CustomerInfo, FileStatus ,Template ,Cart ,Product, Invoice, Purchase , PaymentStatus, CampaignLog} = require('../models');
+const { Message, Contact, ChatLog, File, Instance, MessageStatus, MessageType,   Group,GroupMembers ,CustomerInfo, FileStatus ,Template ,Cart ,Product, Invoice, Purchase , PaymentStatus, CampaignLog, PendingLLMRequest} = require('../models');
 const whatsappAPI = require('../utils/whatsappAPI');
 const { deductCampaignCost } = require('./walletController');
 const fs = require('fs');
@@ -13,7 +13,11 @@ const {
 } = require('./walletController');
 const PdfPrinter = require('pdfmake/build/pdfmake');
 const pdfFonts = require('pdfmake/build/vfs_fonts');
+const { v4: uuidv4 } = require('uuid');
+
 PdfPrinter.vfs = pdfFonts.pdfMake?.vfs ?? pdfFonts.vfs ?? pdfFonts;
+
+
 
 // @desc    WhatsApp webhook verification
 // @route   GET /api/chats/webhook
@@ -40,37 +44,37 @@ const verifyWebhook = (req, res) => {
 // @route   POST /api/chats/webhook
 // @access  Public
 const receiveWebhook = async (req, res) => {
+  // Ack Meta immediately — do not let anything downstream block this
+  res.sendStatus(200);
+
   try {
     const body = req.body;
-
     if (body.object === 'whatsapp_business_account') {
       const entries = body.entry || [];
       for (const entry of entries) {
         const changes = entry.changes || [];
         for (const change of changes) {
           const value = change.value;
-            
-          // Handle messages
           if (value.messages) {
             for (const message of value.messages) {
-              await handleIncomingMessage(message, value);
+              // fire-and-forget, don't await in the request lifecycle
+              handleIncomingMessage(message, value).catch(err =>
+                console.error('handleIncomingMessage error:', err)
+              );
             }
           }
-
-          // Handle message status updates
           if (value.statuses) {
             for (const status of value.statuses) {
-              await handleMessageStatus(status);
+              handleMessageStatus(status).catch(err =>
+                console.error('handleMessageStatus error:', err)
+              );
             }
           }
         }
       }
     }
-
-    res.sendStatus(200);
   } catch (error) {
     console.error('Webhook error:', error);
-    res.sendStatus(500);
   }
 };
 
@@ -784,50 +788,51 @@ const runLLMAgentAndReply = async ({
   locationData,
   sender,
   instance,
-  contactName = 'Customer'}) => {
+  contactName = 'Customer'
+}) => {
+  const isFile = !!fileDoc;
+  const isLocation = !!locationData;
+
+  let googleMapsLink = null;
+  if (isLocation) {
+    googleMapsLink = `https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`;
+  }
+
+  const requestId = uuidv4();
+
+  const payload = {
+    request_id: requestId,
+    phone_number: sender.startsWith('+') ? sender : `+${sender}`,
+    user_name: contactName,
+    message: isFile ? null : message?.text?.body || googleMapsLink || '',
+    is_file: isFile,
+    file_type: isFile ? fileDoc.fileType : null,
+    file_path: isFile ? fileDoc.url : null
+  };
+
   try {
-    const isFile = !!fileDoc;
-
-    const isLocation = !!locationData;
-    
-    // Generate Google Maps link if location is shared
-    let googleMapsLink = null;
-    if (isLocation) {
-      googleMapsLink = `https://www.google.com/maps?q=${locationData.latitude},${locationData.longitude}`;
-    }
-    
-    const payload = {
-      phone_number: sender.startsWith('+') ? sender : `+${sender}`,
-      user_name: contactName,
-      message: isFile ? null : message?.text?.body || googleMapsLink || '',
-      is_file: isFile,
-      file_type: isFile ? fileDoc.fileType : null,
-      file_path: isFile ? fileDoc.url : null
-    };
-    
-
-    console.log('🤖 LLM Payload:', payload);
-
-    const llmRes = await axios.post(
+    // Short timeout — we only need the LLM side to accept the job, not finish it
+    const ackRes = await axios.post(
       `${process.env.LLM_API}/api/ecommerce/message`,
       payload,
-      { timeout: 100000 }
+      { timeout: 8000 }
     );
 
-
-console.log('llmResponse', llmRes)
-    if (llmRes.data.status !== 'success') {
-      console.error('❌ LLM Error:', llmRes.data);
+    if (ackRes.data?.status !== 'accepted') {
+      console.error('❌ LLM did not accept the job:', ackRes.data);
       return;
     }
 
-    await sendLLMResponseViaMeta({
-      llmResponse: llmRes.data,
+    await PendingLLMRequest.create({
+      requestId,
       sender,
-      instance
+      instanceId: instance._id.toString(),
+      numberId: instance.numberId
     });
+
   } catch (error) {
-    console.error('🔥 LLM processing error:', error?.response?.data || error);
+    console.error('🔥 LLM dispatch error:', error?.response?.data || error.message);
+    // Optional: send a fallback "we'll get back to you" message here
   }
 };
 
@@ -1072,6 +1077,53 @@ const deductOrderNotificationCost = async ({
   await CampaignLog.findByIdAndUpdate(campaignLog._id, { status: 'processing' });
  
   return { campaignLog, campaignId, totalCost, balanceBefore, balanceAfter: wallet.balance };
+};
+
+
+const llmCallback = async (req, res) => {
+  try {
+    const { request_id, status, response_type, response, image_urls } = req.body;
+
+    if (!request_id) {
+      return res.status(400).json({ success: false, message: 'request_id is required' });
+    }
+
+    const pending = await PendingLLMRequest.findOne({ requestId: request_id, status: 'pending' });
+    if (!pending) {
+      // Either already processed (duplicate callback) or unknown/expired — ack and ignore
+      return res.status(200).json({ success: true, message: 'No matching pending request' });
+    }
+
+    // Mark it settled immediately so a duplicate/late callback can't double-send
+    pending.status = status === 'success' ? 'completed' : 'failed';
+    await pending.save();
+
+    if (status !== 'success') {
+      console.error('❌ LLM reported failure for', request_id, req.body);
+      return res.status(200).json({ success: true });
+    }
+
+    const instance = await Instance.findOne({
+      numberId: pending.numberId,
+      isActive: true,
+      isDeleted: false
+    });
+    if (!instance) {
+      console.error('❌ Instance not found/inactive for callback', pending.numberId);
+      return res.status(200).json({ success: true });
+    }
+
+    await sendLLMResponseViaMeta({
+      llmResponse: { response_type, response, image_urls },
+      sender: pending.sender,
+      instance
+    });
+
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('🔥 llmCallback error:', error?.response?.data || error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
 };
 
 const messageToOwnerTemplate = async (req, res) => {
@@ -2594,5 +2646,6 @@ module.exports = {
   messageToOwner,
   sendBulkTemplate,
   messageToOwnerTemplate,
-  sendtoowner
+  sendtoowner,
+  llmCallback
 };
