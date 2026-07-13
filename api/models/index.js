@@ -556,6 +556,117 @@ const pendingLLMRequestSchema = new mongoose.Schema({
   createdAt:   { type: Date, default: Date.now, expires: 60 * 60 * 6 } // TTL index, auto-cleans after 6h
 });
 
+const ReviewStatus = {
+  PENDING:  'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
+};
+
+const ConcernType = {
+  CONCERN: 'concern',
+  GOOD:    'good',
+  NEUTRAL: 'neutral'
+};
+
+const ConcernForOptions = [
+  'delivery',
+  'order_process',
+  'product_quality',
+  'chat_ai',
+  'packaging',
+  'price',
+  'other'
+];
+
+const ReviewSource = {
+  WHATSAPP: 'whatsapp',   // captured from a live WhatsApp chat, identified by the LLM
+  ADMIN:    'admin'       // typed in manually from the admin panel
+};
+
+const reviewStatusLogSchema = new mongoose.Schema({
+  status:    { type: String, enum: Object.values(ReviewStatus) },
+  comment:   { type: String },
+  updatedAt: { type: Date, default: Date.now },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { _id: false });
+
+const reviewMediaSchema = new mongoose.Schema({
+  url:      { type: String, required: true },
+  path:     { type: String },
+  fileType: { type: String, enum: ['image', 'video', 'audio', 'document'], default: 'image' },
+  mimeType: { type: String },
+  caption:  { type: String },
+  file:     { type: mongoose.Schema.Types.ObjectId, ref: 'ProductFile' } // set when uploaded via admin panel
+}, { _id: false });
+
+// ==================== REVIEW SCHEMA ====================
+const reviewSchema = new mongoose.Schema({
+
+  // ── Customer details ────────────────────────────────────────────────────
+  customerName:   { type: String, trim: true },
+  customerNumber: { type: String, required: true, index: true, trim: true },
+  customerEmail:  { type: String, trim: true },
+
+  // ── Product details ─────────────────────────────────────────────────────
+  product:      { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  productName:  { type: String },     // denormalised so review still reads fine if product is later removed
+  categoryName: { type: String },
+
+  // ── Purchase details (which order this guest is reviewing) ─────────────
+  purchase: { type: mongoose.Schema.Types.ObjectId, ref: 'Purchase' },
+  orderId:  { type: String },
+  invoice:  { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+
+  // ── The review itself ───────────────────────────────────────────────────
+  reviewText: { type: String, required: true },
+  rating:     { type: Number, min: 1, max: 5 },
+  media:      [reviewMediaSchema],
+
+  // ── LLM classification (read-only from the ops side, in principle) ─────
+  concernType: { type: String, enum: Object.values(ConcernType), default: 'neutral', index: true },
+  llmConfidence:   { type: Number },              // 0–1, optional, if the LLM provides one
+  llmRawResponse:  { type: mongoose.Schema.Types.Mixed },  // raw payload for audit/debugging
+
+  // ── Ops triage ───────────────────────────────────────────────────────────
+  concernFor:      { type: String, enum: ConcernForOptions, default: 'other' },
+  concernForOther: { type: String, trim: true },  // free text used only when concernFor === 'other'
+  remark:          { type: String, trim: true },  // internal note, not shown to the customer
+
+  // ── Workflow status ──────────────────────────────────────────────────────
+  status:    { type: String, enum: Object.values(ReviewStatus), default: ReviewStatus.PENDING, index: true },
+  statusLog: [reviewStatusLogSchema],
+
+  // ── Storefront display ───────────────────────────────────────────────────
+  displayOnWebsite: { type: Boolean, default: false, index: true },
+
+  // ── Our response back to the customer ───────────────────────────────────
+  ourResponse: { type: String, trim: true },
+  respondedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  respondedAt: { type: Date },
+
+  // ── Contact / follow-up tracking ─────────────────────────────────────────
+  isCalled:  { type: Boolean, default: false },
+  calledAt:  { type: Date },
+  calledBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+  isClosed:  { type: Boolean, default: false },
+  closedAt:  { type: Date },
+  closedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+  // ── Provenance ───────────────────────────────────────────────────────────
+  source:      { type: String, enum: Object.values(ReviewSource), default: ReviewSource.WHATSAPP },
+  instance_id: { type: String },          // WhatsApp business instance this came through, if any
+  createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' }   // set when source === 'admin'
+
+}, { timestamps: true });
+
+reviewSchema.index({ status: 1, createdAt: -1 });
+reviewSchema.index({ concernType: 1 });
+reviewSchema.index({ concernFor: 1 });
+reviewSchema.index({ displayOnWebsite: 1, status: 1 });
+reviewSchema.index({ customerNumber: 1, createdAt: -1 });
+reviewSchema.index({ product: 1 });
+reviewSchema.index({ isClosed: 1 });
 
 async function syncAllIndexes() {
   const models = [
@@ -575,7 +686,8 @@ async function syncAllIndexes() {
     { name: 'CampaignLog', model: CampaignLog },
     { name: 'Wallet', model: Wallet },
     { name: 'CountryPricing', model: CountryPricing },
-    { name: 'Discount', model: Discount }
+    { name: 'Discount', model: Discount },
+    { name: 'Review', model: Review }
   ];
 
   console.log('🔄 Starting index synchronization for all models...');
@@ -640,6 +752,8 @@ const Discount = mongoose.model('Discount', discountSchema);
 
 const PendingLLMRequest = mongoose.model('PendingLLMRequest', pendingLLMRequestSchema);
 
+const Review = mongoose.model('Review', reviewSchema);
+
 module.exports = {
   User,
   Instance,
@@ -667,5 +781,10 @@ module.exports = {
   PaymentStatus,
   Discount,
   PendingLLMRequest,
+  Review,
+  ReviewStatus,
+  ConcernType,
+  ConcernForOptions,
+  ReviewSource,
   syncAllIndexes
 };

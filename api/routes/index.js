@@ -17,6 +17,7 @@ const analyticsRoutes = require('./analyticsRoutes');
 const discountRoutes = require('./discountRoutes');
 const locationRoutes = require('./locationRoutes');
 const giftCardRoutes = require('./giftCardRoutes');
+const reviewRoutes = require('./reviewRoutes'); // Import review routes
 
 // Mount routes
 router.use('/auth', authRoutes);
@@ -33,6 +34,7 @@ router.use('/analytics', analyticsRoutes);
 router.use('/discounts', discountRoutes);
 router.use('/locations', locationRoutes);
 router.use('/gift-cards', giftCardRoutes);
+router.use('/reviews', reviewRoutes); // Added review routes
 // Health check
 router.get('/health', (req, res) => {
   res.json({
