@@ -391,10 +391,24 @@ const updateProduct = async (req, res) => {
 
     // Handle deleted files
     if (deletedFileIds) {
-      const ids = typeof deletedFileIds === 'string' ? JSON.parse(deletedFileIds) : deletedFileIds;
-      if (Array.isArray(ids) && ids.length > 0) {
-        await File.updateMany({ _id: { $in: ids } }, { status: 'deleted' });
+      let ids = deletedFileIds;
+
+      if (typeof ids === 'string') {
+        try {
+          ids = JSON.parse(ids);
+        } catch {
+          ids = [ids]; // single id
+        }
       }
+
+      if (!Array.isArray(ids)) {
+        ids = [ids];
+      }
+
+      await File.updateMany(
+        { _id: { $in: ids } },
+        { status: 'deleted' }
+      );
     }
 
     // Handle new file uploads

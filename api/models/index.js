@@ -595,6 +595,7 @@ const reviewMediaSchema = new mongoose.Schema({
   path:     { type: String },
   fileType: { type: String, enum: ['image', 'video', 'audio', 'document'], default: 'image' },
   mimeType: { type: String },
+  fileId:   { type: String },
   caption:  { type: String },
   file:     { type: mongoose.Schema.Types.ObjectId, ref: 'ProductFile' } // set when uploaded via admin panel
 }, { _id: false });
