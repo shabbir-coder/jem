@@ -805,7 +805,6 @@ const runLLMAgentAndReply = async ({
     phone_number: sender.startsWith('+') ? sender : `+${sender}`,
     user_name: contactName,
     message: isFile ? null : message?.text?.body || googleMapsLink || '',
-    message_type: isFile ? fileDoc.fileType : 'text',
     is_file: isFile,
     file_type: isFile ? fileDoc.fileType : null,
     file_path: isFile ? fileDoc.url : null
@@ -1237,37 +1236,32 @@ const messageToOwnerTemplate = async (req, res) => {
  
     // ── 8. PURCHASE + INVOICE ────────────────────────────────────────────────
     const orderId  = await generateOrderId();
-    // const purchase = await Purchase.create({
-    //   userNumber: contactNumber,
-    //   orderId,
-    //   items: orderDetails.items.map(i => ({
-    //     product:     i.product_id,
-    //     productName: i.product_name,
-    //     quantity:    i.quantity,
-    //     price:       i.price?.value,
-    //     total:       i.total_price
-    //   })),
-    //   deliveryType: addressInfo.deliveryType || 'home_delivery',
-    //   subTotal:        subTotal.toString(),
-    //   gst:             gstAmount.toString(),
-    //   deliveryCharges: shippingCharges.toString(),
-    //   totalAmount:     grandTotal.toString(),
-    //   shippingAddress: {
-    //     name:    addressInfo.name,
-    //     address: addressInfo.address,
-    //     city:    addressInfo.city,
-    //     state:   addressInfo.state,
-    //     pinCode: addressInfo.pinCode
-    //   },
-    //   instance_id: instance.numberId,
-    //   statusLog:   [{ status: 'pending', comment: 'Order created from WhatsApp' }]
-    // });
+    const purchase = await Purchase.create({
+      userNumber: contactNumber,
+      orderId,
+      items: orderDetails.items.map(i => ({
+        product:     i.product_id,
+        productName: i.product_name,
+        quantity:    i.quantity,
+        price:       i.price?.value,
+        total:       i.total_price
+      })),
+      deliveryType: addressInfo.deliveryType || 'home_delivery',
+      subTotal:        subTotal.toString(),
+      gst:             gstAmount.toString(),
+      deliveryCharges: shippingCharges.toString(),
+      totalAmount:     grandTotal.toString(),
+      shippingAddress: {
+        name:    addressInfo.name,
+        address: addressInfo.address,
+        city:    addressInfo.city,
+        state:   addressInfo.state,
+        pinCode: addressInfo.pinCode
+      },
+      instance_id: instance.numberId,
+      statusLog:   [{ status: 'pending', comment: 'Order created from WhatsApp' }]
+    });
  
-    const purchase = await Purchase.findOne({ orderId: orderDetails.order_id });
-    if (!purchase) {
-      return res.status(404).json({ success: false, message: `Purchase not found for orderId ${orderDetails.order_id}` });
-    }
-
     const invoice = await Invoice.create({
       invoiceNumber: `INV-${Date.now()}`,
       purchaseId:    purchase._id,
