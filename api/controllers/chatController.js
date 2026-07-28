@@ -1288,6 +1288,7 @@ const messageToOwnerTemplate = async (req, res) => {
     });
  
     purchase.invoice = invoice._id;
+    purchase.instance_id = instance.numberId;
     await purchase.save();
  
     // ── 9. WALLET DEDUCTION (no balance check — order notifications always go through) ──
@@ -1396,6 +1397,8 @@ const messageToOwnerTemplate = async (req, res) => {
   }
 };
  
+
+
 const messageToOwner = async (req, res) => {
   try {
     const { mediaUrl, contactNumber, message, orderDetails } = req.body;
