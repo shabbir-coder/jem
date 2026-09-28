@@ -140,7 +140,12 @@ const handleIncomingMessage = async (message, value) => {
       type,
       status: [{
         status: MessageStatus.RECEIVED,
-        timeStamp: new Date()
+        timeStamp: new Date(),
+        metadata: {
+          message,
+          webhookMetadata: value.metadata,
+          contacts: value.contacts
+        }
       }]
     };
 
@@ -217,7 +222,7 @@ const handleMessageStatus = async (status) => {
     if (!msg) return;
 
     // Append new status entry
-    msg.status.push({ status: status.status, timeStamp: new Date() });
+    msg.status.push({ status: status.status, timeStamp: new Date() ,  metadata: status });
 
     // Keep only last 10 statuses in memory
     if (msg.status.length > 10) {
@@ -452,7 +457,8 @@ const sendMessage = async (req, res) => {
       status: [
         {
           status: MessageStatus.SENT,
-          timeStamp: now
+          timeStamp: now,
+          metadata: result  
         }
       ]
     });
@@ -534,7 +540,8 @@ const sendMediaMessage = async (req, res) => {
       status:  [
         {
           status: MessageStatus.SENT,
-          timeStamp: new Date()
+          timeStamp: new Date(),
+          metadata: result  
         }
       ]
     });
@@ -589,7 +596,8 @@ const replyToMessage = async (req, res) => {
       status:  [
         {
           status: MessageStatus.SENT,
-          timeStamp: new Date()
+          timeStamp: new Date(),
+          metadata: result  
         }
       ]
     });
@@ -876,7 +884,7 @@ const sendLLMResponseViaMeta = async ({ llmResponse, sender, instance }) => {
           instance_id: instance._id.toString(),
           text,
           type: 'text',
-          status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
+          status: [{ status: MessageStatus.SENT, timeStamp: new Date(), metadata: res.data }]
         });
       }
     }
@@ -928,7 +936,7 @@ const sendLLMResponseViaMeta = async ({ llmResponse, sender, instance }) => {
             text: isLastImage && responseType === 'both' ? text : '',
             type: 'image',
             file: fileDoc._id,
-            status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
+            status: [{ status: MessageStatus.SENT, timeStamp: new Date(), metadata: res.data }]
           });
         }
       }

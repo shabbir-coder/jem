@@ -240,7 +240,8 @@ const chatSchema = new mongoose.Schema({
   forwardedFrom: { type: String },
   status: [{
     status: { type: String, enum: Object.values(MessageStatus), default: MessageStatus.SENT },
-    timeStamp: { type: Date }
+    timeStamp: { type: Date },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: null } 
   }],
   isRead: { type: Boolean, default: false },
   readAt: { type: Date },
