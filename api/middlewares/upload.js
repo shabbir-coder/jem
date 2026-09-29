@@ -1,11 +1,17 @@
-const upload = require('../config/multer');
 const multer = require('multer');
+const uploadMessage = require('../config/multerMessages');
+const upload = require('../config/multer');
+
 
 // Single file upload
 const uploadSingle = upload.single('file');
 
 // Multiple files upload (max 10)
 const uploadMultiple = upload.array('files', 10);
+
+// Single file upload for message
+const uploadMessageFile = uploadMessage.single('file'); // NEW
+
 
 // Handle multer errors
 const handleUploadError = (err, req, res, next) => {
@@ -29,4 +35,4 @@ const handleUploadError = (err, req, res, next) => {
   next();
 };
 
-module.exports = { uploadSingle, uploadMultiple, handleUploadError };
+module.exports = { uploadSingle, uploadMultiple, uploadMessageFile, handleUploadError };

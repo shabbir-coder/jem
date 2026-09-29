@@ -17,7 +17,7 @@ const {
   uploadFile,
   llmCallback
 } = require('../controllers/chatController');
-const { uploadMultiple, handleUploadError, uploadSingle } = require('../middlewares/upload');
+const { uploadMultiple, handleUploadError, uploadMessageFile } = require('../middlewares/upload');
 
 // Webhook routes (public)
 router.get('/webhook', verifyWebhook);
@@ -70,6 +70,6 @@ router.post('/llm-callback', llmCallback);
 
 
 router.route('/file') 
-  .post(protect, uploadSingle, handleUploadError, uploadFile);
+  .post(protect, uploadMessageFile, handleUploadError, uploadFile);
 
 module.exports = router;
