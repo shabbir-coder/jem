@@ -509,6 +509,51 @@ const sendMessage = async (req, res) => {
 // @desc    Send media message
 // @route   POST /api/chats/send-media
 // @access  Private
+const MIME_BY_EXT = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+  mp4: 'video/mp4', '3gp': 'video/3gpp', mov: 'video/quicktime',
+  mp3: 'audio/mpeg', ogg: 'audio/ogg', aac: 'audio/aac', amr: 'audio/amr', m4a: 'audio/mp4', wav: 'audio/wav',
+  pdf: 'application/pdf', doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  txt: 'text/plain'
+};
+
+// Reuse the File record created by POST /chats/file, or create one if the URL came from elsewhere
+const resolveFileDoc = async ({ mediaUrl, mediaType, caption, userId }) => {
+  const fileName = path.basename(new URL(mediaUrl).pathname);
+
+  // COSMOS SAFE: simple $or on two fields, no sort
+  let fileDoc = await File.findOne({ $or: [{ url: mediaUrl }, { fileName }] });
+
+  if (fileDoc) {
+    // keep caption on the file in sync with what was sent
+    if (caption && fileDoc.caption !== caption) {
+      fileDoc.caption = caption;
+      await fileDoc.save();
+    }
+    return fileDoc;
+  }
+
+  const ext = path.extname(fileName).slice(1).toLowerCase();
+  return File.create({
+    fileName,
+    originalName: fileName,
+    fileType: mediaType,
+    mimeType: MIME_BY_EXT[ext] || 'application/octet-stream',
+    fileSize: 0,
+    url: mediaUrl,
+    path: mediaUrl,
+    caption: caption || '',
+    uploadedBy: userId,
+    entityType: 'message'
+  });
+};
+
+// @desc    Send media message
+// @route   POST /api/chats/send-media
+// @access  Private
 const sendMediaMessage = async (req, res) => {
   try {
     const { to, mediaType, mediaUrl, caption, instanceId } = req.body;
@@ -519,42 +564,72 @@ const sendMediaMessage = async (req, res) => {
       isActive: true,
       isDeleted: false
     });
-    if (!instance || !instance.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid or inactive instance'
-      });
+    if (!instance) {
+      return res.status(400).json({ success: false, message: 'Invalid or inactive instance' });
     }
 
     // Send via WhatsApp API
     const result = await whatsappAPI.sendMedia(instanceId, to, mediaType, mediaUrl, caption);
+    const messageId = result?.messages?.[0]?.id;
 
-    // Save to database
+    if (!messageId) {
+      return res.status(500).json({ success: false, message: 'Failed to send media via WhatsApp' });
+    }
+
+    const now = new Date();
+
+    // File record (non-fatal: the WhatsApp message is already sent)
+    let fileDoc = null;
+    try {
+      fileDoc = await resolveFileDoc({ mediaUrl, mediaType, caption, userId: req.user?._id });
+    } catch (fileErr) {
+      console.error('⚠️ File record failed for send-media:', fileErr.message);
+    }
+
+    // Message record, same shape as the other send flows
     const message = await Message.create({
-      messageId: result.messages[0].id,
+      messageId,
       sender: instance.number.toString(),
       receiver: to,
       instance_id: instanceId,
       text: caption || '',
       type: mediaType,
-      status:  [
-        {
-          status: MessageStatus.SENT,
-          timeStamp: new Date(),
-          metadata: result  
-        }
-      ]
+      file: fileDoc?._id || null,
+      status: [{ status: MessageStatus.SENT, timeStamp: now, metadata: result }]
     });
 
+    // ChatLog + Contact update (non-fatal)
+    try {
+      await Promise.all([
+        ChatLog.create({
+          sender: instance.number.toString(),
+          receiver: to,
+          instance_id: instanceId,
+          usedFile: fileDoc?._id || null,
+          action: 'sent',
+          metadata: { source: 'manual-media', mediaType }
+        }),
+        Contact.findOneAndUpdate(
+          { number: to },
+          { $set: { lastMessageAt: now }, $setOnInsert: { number: to } },
+          { upsert: true }
+        )
+      ]);
+    } catch (dbErr) {
+      console.error('⚠️ ChatLog/Contact update failed for send-media:', dbErr.message);
+    }
+
+    // Return file populated, matching what getMessages returns
     res.json({
       success: true,
       message: 'Media message sent successfully',
-      data: message
+      data: { ...message.toObject(), file: fileDoc ? fileDoc.toObject() : null }
     });
   } catch (error) {
+    console.error('Send media error:', error?.response?.data || error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: error?.response?.data?.error?.message || error.message
     });
   }
 };
