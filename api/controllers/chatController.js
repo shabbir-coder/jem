@@ -1213,9 +1213,9 @@ const llmCallback = async (req, res) => {
 const messageToOwnerTemplate = async (req, res) => {
   try {
     const { mediaUrl, contactNumber, message, orderDetails } = req.body;
- 
+
     console.log(JSON.stringify(req.body));
- 
+
     // ── VALIDATION ──────────────────────────────────────────────────────────
     if (!contactNumber) {
       return res.status(400).json({ success: false, message: 'contactNumber is required' });
@@ -1223,7 +1223,7 @@ const messageToOwnerTemplate = async (req, res) => {
     if (!orderDetails?.items?.length) {
       return res.status(400).json({ success: false, message: 'orderDetails with items is required' });
     }
- 
+
     // ── 1. ACTIVE INSTANCE ───────────────────────────────────────────────────
     const instance = await Instance.findOne({ isActive: true, isDeleted: false }).lean();
     if (!instance) {
@@ -1232,47 +1232,59 @@ const messageToOwnerTemplate = async (req, res) => {
     if (!instance.businessOwners?.length) {
       return res.status(400).json({ success: false, message: 'No business owners configured' });
     }
- 
-    // ── 2. TEMPLATE ──────────────────────────────────────────────────────────
-    const template = await Template.findOne({ name: 'neworder' }).lean();
+
+    // ── 2. TEMPLATE (fetched by name) ────────────────────────────────────────
+    const TEMPLATE_NAME = 'Order Confirmation V2';
+    const template = await Template.findOne({ name: TEMPLATE_NAME }).lean();
     if (!template) {
-      return res.status(404).json({ success: false, message: 'neworder template not found' });
+      return res.status(404).json({ success: false, message: `${TEMPLATE_NAME} template not found` });
     }
- 
+
     // ── 3. CONTACT / ADDRESS ─────────────────────────────────────────────────
-    const contact     = await Contact.findOne({ number: contactNumber }).lean();
+    const contact = await Contact.findOne({ number: contactNumber }).lean();
     const addressInfo = await Contact.findOne({
       number: { $in: [`+${contactNumber}`, contactNumber] },
       address: { $exists: true, $ne: '' }
     }).lean();
- 
+
     if (!addressInfo) {
       return res.status(404).json({ success: false, message: 'Customer address not found' });
     }
- 
-    // ── 4. TOTALS ────────────────────────────────────────────────────────────
+
+    // ── 4. PURCHASE (needed for template params) ─────────────────────────────
+    const purchase = await Purchase.findOne({ orderId: orderDetails.order_id });
+    if (!purchase) {
+      return res.status(404).json({ success: false, message: `Purchase not found for orderId ${orderDetails.order_id}` });
+    }
+
+    // ── 5. TOTALS ────────────────────────────────────────────────────────────
     const subTotal        = parseFloat(orderDetails.subtotal || 0);
     const shippingCharges = parseFloat(orderDetails.shipping_charge || 0);
     const gstAmount       = 0;
-    const grandTotal      = parseFloat(orderDetails.total_amount || 0).toFixed(2);
- 
-    // ── 5. ORDER DATA ────────────────────────────────────────────────────────
+    const grandTotal      = parseFloat(orderDetails.total_amount || purchase.totalAmount || 0).toFixed(2);
+
+    const formatDate = (d) =>
+      new Date(d).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
+      });
+
+    // ── 6. ORDER DATA (for PDF) ──────────────────────────────────────────────
     const orderData = {
-        contact: {
-          name: addressInfo.name || contact?.name || 'N/A',
-          number: addressInfo.number || contactNumber,
-          address: addressInfo.address || 'N/A',
-          city: addressInfo.city || 'N/A',
-          state: addressInfo.state || 'N/A',
-          country: addressInfo.country || 'N/A',
-          pinCode: addressInfo.pinCode || 'N/A',
-          mapUrl: addressInfo.mapUrl || '',
-          deliveryType: addressInfo.deliveryType || 'home_delivery',
-          isHomeDelivery: addressInfo?.deliveryType ? addressInfo?.deliveryType === 'home_delivery': true,
-          recieverName: addressInfo.recieverName || 'N/A',
-          recieverNumber: addressInfo.recieverNumber || 'N/A'
-        },
-        cartItems: orderDetails.items.map(item => ({
+      contact: {
+        name:           addressInfo.name || contact?.name || 'N/A',
+        number:         addressInfo.number || contactNumber,
+        address:        addressInfo.address || 'N/A',
+        city:           addressInfo.city || 'N/A',
+        state:          addressInfo.state || 'N/A',
+        country:        addressInfo.country || 'N/A',
+        pinCode:        addressInfo.pinCode || 'N/A',
+        mapUrl:         addressInfo.mapUrl || '',
+        deliveryType:   addressInfo.deliveryType || 'home_delivery',
+        isHomeDelivery: addressInfo?.deliveryType ? addressInfo.deliveryType === 'home_delivery' : true,
+        recieverName:   addressInfo.recieverName || 'N/A',
+        recieverNumber: addressInfo.recieverNumber || 'N/A'
+      },
+      cartItems: orderDetails.items.map(item => ({
         productName:  item.product_name,
         quantity:     item.quantity,
         price:        item.price?.value || 0,
@@ -1284,73 +1296,54 @@ const messageToOwnerTemplate = async (req, res) => {
       shipping:          shippingCharges,
       gst:               gstAmount,
       grandTotal,
-      orderDate:         new Date(orderDetails.order_date).toLocaleString('en-IN', {
-        timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short'
-      }),
+      orderDate:         formatDate(orderDetails.order_date),
       additionalMessage: message || ''
     };
- 
-    // ── 6. GENERATE PDF ──────────────────────────────────────────────────────
+
+    // ── 7. GENERATE PDF ──────────────────────────────────────────────────────
     const pdfPath      = await generateOrderPDF(orderData, contactNumber);
     const pdfFileName  = path.basename(pdfPath);
     const pdfPublicUrl = `${process.env.FILE_URL}/uploads/pdfs/${pdfFileName}`;
- 
-    // ── 7. BUILD TEMPLATE COMPONENTS ─────────────────────────────────────────
-    const components = [];
- 
-    components.push({
-      type: 'header',
-      parameters: [{
-        type: 'document',
-        document: { link: pdfPublicUrl, filename: `Order_${contactNumber}.pdf` }
-      }]
-    });
- 
+
+    // ── 8. BUILD TEMPLATE COMPONENTS ─────────────────────────────────────────
+    // Values available for {{placeholder}} binding in template.parameters[].bindValue
+    const bindValues = {
+      orderId:       purchase.orderId,
+      totalAmount:   `₹${grandTotal}`,
+      createdAt:     formatDate(purchase.createdAt),
+      contactName:   orderData.contact.name,
+      contactNumber,
+      orderTotal:    `₹${grandTotal}`,
+      itemCount:     orderDetails.items.length.toString()
+    };
+
+    const resolveBindValue = (raw = '') =>
+      raw
+        .replace(/{{\s*(\w+)\s*}}/g, (_, key) => bindValues[key] ?? '')
+        .replace(/[\n\t]+/g, ' ')   // Meta disallows newlines/tabs in param text
+        .trim() || 'N/A';           // Meta rejects empty params
+
+    const components = [
+      {
+        type: 'header',
+        parameters: [{
+          type: 'document',
+          document: { link: pdfPublicUrl, filename: `Order_${purchase.orderId}.pdf` }
+        }]
+      }
+    ];
+
     if (template.parameters?.length) {
-      const bodyParameters = template.parameters.map(param => {
-        let value = param.bindValue || '';
-        value = value.replace(/{{contactName}}/g,   orderData.contact.name);
-        value = value.replace(/{{contactNumber}}/g, contactNumber);
-        value = value.replace(/{{orderTotal}}/g,    `₹${grandTotal}`);
-        value = value.replace(/{{itemCount}}/g,     orderDetails.items.length.toString());
-        return { type: 'text', text: value };
+      components.push({
+        type: 'body',
+        parameters: template.parameters.map(param => ({
+          type: 'text',
+          text: resolveBindValue(param.bindValue)
+        }))
       });
-      components.push({ type: 'body', parameters: bodyParameters });
-    }
- 
-    // ── 8. PURCHASE + INVOICE ────────────────────────────────────────────────
-    const orderId  = await generateOrderId();
-    // const purchase = await Purchase.create({
-    //   userNumber: contactNumber,
-    //   orderId,
-    //   items: orderDetails.items.map(i => ({
-    //     product:     i.product_id,
-    //     productName: i.product_name,
-    //     quantity:    i.quantity,
-    //     price:       i.price?.value,
-    //     total:       i.total_price
-    //   })),
-    //   deliveryType: addressInfo.deliveryType || 'home_delivery',
-    //   subTotal:        subTotal.toString(),
-    //   gst:             gstAmount.toString(),
-    //   deliveryCharges: shippingCharges.toString(),
-    //   totalAmount:     grandTotal.toString(),
-    //   shippingAddress: {
-    //     name:    addressInfo.name,
-    //     address: addressInfo.address,
-    //     city:    addressInfo.city,
-    //     state:   addressInfo.state,
-    //     pinCode: addressInfo.pinCode
-    //   },
-    //   instance_id: instance.numberId,
-    //   statusLog:   [{ status: 'pending', comment: 'Order created from WhatsApp' }]
-    // });
- 
-    const purchase = await Purchase.findOne({ orderId: orderDetails.order_id });
-    if (!purchase) {
-      return res.status(404).json({ success: false, message: `Purchase not found for orderId ${orderDetails.order_id}` });
     }
 
+    // ── 9. INVOICE ───────────────────────────────────────────────────────────
     const invoice = await Invoice.create({
       invoiceNumber: `INV-${Date.now()}`,
       purchaseId:    purchase._id,
@@ -1369,12 +1362,12 @@ const messageToOwnerTemplate = async (req, res) => {
       paymentStatus:   PaymentStatus.PAID,
       filePath:        pdfPublicUrl
     });
- 
-    purchase.invoice = invoice._id;
+
+    purchase.invoice     = invoice._id;
     purchase.instance_id = instance.numberId;
     await purchase.save();
- 
-    // ── 9. WALLET DEDUCTION (no balance check — order notifications always go through) ──
+
+    // ── 10. WALLET DEDUCTION (never blocks the notification) ─────────────────
     const ownerContacts = instance.businessOwners.map(o => ({ number: o.number.toString() }));
     let campaignLog = null;
     let campaignId  = null;
@@ -1385,45 +1378,43 @@ const messageToOwnerTemplate = async (req, res) => {
         ownerContacts
       }));
     } catch (walletErr) {
-      // Wallet errors must never block the notification — log and continue
-      console.error('⚠️  Wallet deduction failed (order notification will still send):', walletErr.message);
+      console.error('⚠️  Wallet deduction failed (notification will still send):', walletErr.message);
     }
- 
-    // ── 10. SEND TO EACH OWNER ───────────────────────────────────────────────
+
+    // ── 11. SEND TO EACH OWNER ───────────────────────────────────────────────
     const graphURL    = `${process.env.META_API}/${instance.numberId}/messages`;
     const sendResults = [];
-    const captionText = `New Order Received — ₹${grandTotal}`;
+    const captionText = `Order Confirmation ${purchase.orderId} — ₹${grandTotal}`;
     let successCount  = 0;
     let failedCount   = 0;
- 
+
     for (const owner of instance.businessOwners) {
       const to = owner.number.toString();
- 
+
       try {
         const payload = {
           messaging_product: 'whatsapp',
           to,
           type: 'template',
           template: {
-            name:       template.templateName,
+            name:       template.templateName,          // order_payment_confirmation
             language:   { code: template.languageCode || 'en' },
             components
           }
         };
- 
+
         const response = await axios.post(graphURL, payload, {
           headers: {
             Authorization:  `Bearer ${instance.accessToken}`,
             'Content-Type': 'application/json'
           }
         });
- 
+
         console.log('response', JSON.stringify(response.data));
         const metaMessageId = response.data.messages?.[0]?.id || null;
- 
+
         sendResults.push({ owner: owner.name, number: owner.number, status: 'sent', messageId: metaMessageId });
- 
-        // ── Save message to DB ──────────────────────────────────────────────
+
         if (metaMessageId) {
           try {
             await saveOwnerNotificationMessage({
@@ -1440,7 +1431,7 @@ const messageToOwnerTemplate = async (req, res) => {
             console.error(`⚠️  DB save failed for owner ${to}:`, dbErr.message);
           }
         }
- 
+
         successCount++;
       } catch (ownerError) {
         failedCount++;
@@ -1452,8 +1443,8 @@ const messageToOwnerTemplate = async (req, res) => {
         });
       }
     }
- 
-    // ── 11. UPDATE CAMPAIGN STATUS ───────────────────────────────────────────
+
+    // ── 12. UPDATE CAMPAIGN STATUS ───────────────────────────────────────────
     if (campaignLog) {
       await CampaignLog.findByIdAndUpdate(campaignLog._id, {
         status:       failedCount === instance.businessOwners.length ? 'failed' : 'completed',
@@ -1461,7 +1452,7 @@ const messageToOwnerTemplate = async (req, res) => {
         failedCount
       });
     }
- 
+
     return res.status(200).json({
       success: true,
       message: 'Order notification sent successfully',
@@ -1469,7 +1460,7 @@ const messageToOwnerTemplate = async (req, res) => {
       pdfPublicUrl,
       ...(campaignId && { campaignId })
     });
- 
+
   } catch (error) {
     console.error('messageToOwnerTemplate error:', error?.response?.data || error);
     return res.status(500).json({
