@@ -209,6 +209,7 @@ const getProducts = async (req, res) => {
       search,
       categoryId,
       status,
+      excludeStatus,
       makeupPlacement,
       minPrice,
       maxPrice,
@@ -228,8 +229,21 @@ const getProducts = async (req, res) => {
       ];
     }
     if (categoryId)      match.categoryId      = categoryId;
-    if (status)          match.status          = status;
     if (makeupPlacement) match.makeupPlacement = makeupPlacement;
+
+    const statusConditions = [];
+
+    if (status) {
+      const include = status.split(',');
+      statusConditions.push({ status: { $in: include } });
+    }
+    if (excludeStatus) {
+      const exclude = excludeStatus.split(',');
+      statusConditions.push({ status: { $nin: exclude } });
+    }
+    if (statusConditions.length) {
+      match.$and = [...(match.$and || []), ...statusConditions];
+    }
 
     const pageNum  = parseInt(page);
     const limitNum = parseInt(limit);

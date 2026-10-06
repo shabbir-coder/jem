@@ -1041,74 +1041,69 @@ const generateOrderId = async () => {
   }
 };
 
-  const saveOwnerNotificationMessage = async ({
-    instance,
-    ownerNumber,
-    pdfPublicUrl,
-    pdfFileName,
-    captionText,
-    messageId,          // returned by Meta API
-    campaignLogId = null,
-    templateId    = null
-  }) => {
-    // 1. File record (type = document, so the chat UI can render it)
-    const fileDoc = await File.create({
-      fileName:     pdfFileName,
-      originalName: pdfFileName,
-      fileType:     'document',
-      mimeType:     'application/pdf',
-      fileSize:     0,
-      url:          pdfPublicUrl,
-      path:         pdfPublicUrl,
-      caption:      captionText,
-      entityType:   'message'
-    });
-  
-    // 2. Message record — matches chatSchema fields
-    //    messageType / templateId / campaignId are extra fields that exist on the
-    //    processContact() messages; they're safe to include even if schema doesn't
-    //    have them (Mongoose silently ignores unknown fields unless strict:true is
-    //    overridden — but processContact already does the same thing successfully).
-    const message = await Message.create({
-      messageId,
-      sender:      instance.number.toString(),
-      receiver:    ownerNumber,
-      instance_id: instance.numberId,
-      text:        captionText,
-      type:        'document',
-      file:        fileDoc._id,
-      ...(templateId    && { templateId }),
-      ...(campaignLogId && { campaignId: campaignLogId }),
-      ...(templateId    && { messageType: 'template' }),
-      status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
-    });
-  
-    // 3. ChatLog (same as processContact)
-    await ChatLog.create({
-      sender:      instance.number.toString(),
-      receiver:    ownerNumber,
-      instance_id: instance.numberId,
-      usedFile:    fileDoc._id,
-      action:      'sent',
-      metadata: {
-        ...(templateId && { templateId }),
-        source: 'order-notification'
-      }
-    });
-  
-    // 4. Update / upsert the owner contact so conversation appears in chat
-    await Contact.findOneAndUpdate(
-      { number: ownerNumber },
-      {
-        $set:         { lastMessageAt: new Date() },
-        $setOnInsert: { number: ownerNumber }
-      },
-      { upsert: true, new: true }
-    );
-  
-    return message;
-  };
-  
+const saveOwnerNotificationMessage = async ({
+  instance,
+  ownerNumber,
+  pdfPublicUrl,
+  pdfFileName,
+  messageText,        // rendered template text with bound values
+  messageId,          // returned by Meta API
+  campaignLogId = null,
+  templateId    = null
+}) => {
+  // 1. File record (document, so the chat UI can render the PDF)
+  const fileDoc = await File.create({
+    fileName:     pdfFileName,
+    originalName: pdfFileName,
+    fileType:     'document',
+    mimeType:     'application/pdf',
+    fileSize:     0,
+    url:          pdfPublicUrl,
+    path:         pdfPublicUrl,
+    caption:      messageText,
+    entityType:   'message'
+  });
+
+  // 2. Message record, saved with the same text the owner received
+  const message = await Message.create({
+    messageId,
+    sender:      instance.number.toString(),
+    receiver:    ownerNumber,
+    instance_id: instance.numberId,
+    text:        messageText,
+    type:        'document',
+    file:        fileDoc._id,
+    ...(templateId    && { templateId }),
+    ...(campaignLogId && { campaignId: campaignLogId }),
+    ...(templateId    && { messageType: 'template' }),
+    status: [{ status: MessageStatus.SENT, timeStamp: new Date() }]
+  });
+
+  // 3. ChatLog
+  await ChatLog.create({
+    sender:      instance.number.toString(),
+    receiver:    ownerNumber,
+    instance_id: instance.numberId,
+    usedFile:    fileDoc._id,
+    action:      'sent',
+    metadata: {
+      ...(templateId && { templateId }),
+      source: 'order-notification'
+    }
+  });
+
+  // 4. Upsert the owner contact so the conversation appears in chat
+  await Contact.findOneAndUpdate(
+    { number: ownerNumber },
+    {
+      $set:         { lastMessageAt: new Date() },
+      $setOnInsert: { number: ownerNumber }
+    },
+    { upsert: true, new: true }
+  );
+
+  return message;
+};
 // ─────────────────────────────────────────────────────────────────────────────
 // INTERNAL HELPER — deduct wallet without checking balance (order notifications
 // must go through even if wallet is zero / negative).
@@ -1316,12 +1311,23 @@ const messageToOwnerTemplate = async (req, res) => {
       orderTotal:    `₹${grandTotal}`,
       itemCount:     orderDetails.items.length.toString()
     };
-
     const resolveBindValue = (raw = '') =>
       raw
         .replace(/{{\s*(\w+)\s*}}/g, (_, key) => bindValues[key] ?? '')
         .replace(/[\n\t]+/g, ' ')   // Meta disallows newlines/tabs in param text
         .trim() || 'N/A';           // Meta rejects empty params
+
+    // Resolve each template parameter ONCE: [{ key: '1', text: 'ORD123' }, ...]
+    const resolvedParams = (template.parameters || []).map(param => ({
+      key:  String(param.key),
+      text: resolveBindValue(param.bindValue)
+    }));
+
+    // Same message the owner receives, with {{1}}, {{2}}, {{3}} replaced
+    const renderedText = (template.templateText || '').replace(
+      /{{\s*(\d+)\s*}}/g,
+      (match, key) => resolvedParams.find(p => p.key === key)?.text ?? match
+    );
 
     const components = [
       {
@@ -1333,13 +1339,10 @@ const messageToOwnerTemplate = async (req, res) => {
       }
     ];
 
-    if (template.parameters?.length) {
+    if (resolvedParams.length) {
       components.push({
         type: 'body',
-        parameters: template.parameters.map(param => ({
-          type: 'text',
-          text: resolveBindValue(param.bindValue)
-        }))
+        parameters: resolvedParams.map(p => ({ type: 'text', text: p.text }))
       });
     }
 
@@ -1422,7 +1425,7 @@ const messageToOwnerTemplate = async (req, res) => {
               ownerNumber:   to,
               pdfPublicUrl,
               pdfFileName,
-              captionText,
+              messageText:   renderedText,          // ← the actual template message
               messageId:     metaMessageId,
               campaignLogId: campaignLog?._id || null,
               templateId:    template._id
