@@ -1,11 +1,34 @@
 // ==================== controllers/discountController.js ====================
 const { Discount, Purchase } = require('../models');
 const { GiftCard } = require('./giftCardController');
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 const toNum = v => parseFloat(String(v).replace(/[^0-9.]/g, '')) || 0;
+
+// Strip leading "+" so "+9199..." and "9199..." compare equal
+const norm = n => String(n || '').replace(/^\+/, '');
+
+// Dates are stored as "YYYY-MM-DD" strings. Treat them as IST day boundaries
+// so a campaign ending on 31 Oct is valid until 23:59:59 IST on 31 Oct.
+const toStart = s => new Date(`${s}T00:00:00.000+05:30`);
+const toEnd   = s => new Date(`${s}T23:59:59.999+05:30`);
+
+const skipEntry = (d, reason) => ({
+  campaignId:   d._id,
+  campaignName: d.campaignName,
+  couponCode:   d.couponCode || null,
+  reason
+});
+
+const skipFromApplied = (a, reason) => ({
+  campaignId:   a.campaignId,
+  campaignName: a.campaignName,
+  couponCode:   a.couponCode,
+  reason
+});
 
 /**
  * Decide which cart items are eligible for a given discount campaign.
@@ -191,7 +214,71 @@ async function checkCustomerEligibility(discount, { customerId, customerNumber }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// @desc    Apply ALL eligible discounts to a cart (multi-discount engine)
+// Evaluate ONE campaign against the cart (dates, customer, items, amount).
+// Returns { skip }  OR  { applied, combinable }
+// ─────────────────────────────────────────────────────────────────────────────
+async function evaluateCampaign(discount, cartItems, customerCtx, now) {
+  // Date validity (IST day boundaries)
+  if (discount.startDate && toStart(discount.startDate) > now)
+    return { skip: skipEntry(discount, 'This offer is not active yet.') };
+  if (discount.endDate && toEnd(discount.endDate) < now)
+    return { skip: skipEntry(discount, 'This offer has expired.') };
+
+  // Customer eligibility
+  const customerError = await checkCustomerEligibility(discount, customerCtx);
+  if (customerError) return { skip: skipEntry(discount, customerError) };
+
+  // Item eligibility
+  const { eligibleItems, ineligibleItems } = splitItemsByScope(cartItems, discount);
+  if (!eligibleItems.length)
+    return { skip: skipEntry(discount, 'No items in your cart are eligible for this discount.') };
+
+  // Financials
+  const eligibleSubtotal = eligibleItems.reduce(
+    (s, i) => s + toNum(i.price) * (i.quantity || 1), 0
+  );
+
+  const { discountAmount, tierApplied, freeShipping, error } =
+    computeDiscount(discount, eligibleSubtotal);
+  if (error) return { skip: skipEntry(discount, error) };
+
+  const rounded = parseFloat(discountAmount.toFixed(2));
+
+  return {
+    combinable: !!discount.limits?.combineOther,
+    applied: {
+      campaignId:    discount._id,
+      campaignName:  discount.campaignName,
+      couponCode:    discount.couponCode || null,
+      discountType:  discount.discountType,
+      pricingModel:  discount.pricingModel,
+      freeShipping,
+      isGiftCard:    discount._isGiftCard || false,
+
+      eligibleItems:   eligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
+      ineligibleItems: ineligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
+      itemBreakdown:   buildItemBreakdown(eligibleItems, discountAmount, eligibleSubtotal),
+
+      eligibleSubtotal: parseFloat(eligibleSubtotal.toFixed(2)),
+      discountAmount:   rounded,
+
+      tierApplied,
+      nextTier: getNextTierHint(discount, eligibleSubtotal),
+
+      appliedDiscountEmbed: {
+        campaignId:     discount._id,
+        campaignName:   discount.campaignName,
+        couponCode:     discount.couponCode || null,
+        discountType:   discount.discountType,
+        discountAmount: rounded,
+        freeShipping
+      }
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// @desc    Apply eligible discounts to a cart
 // @route   POST /api/discounts/apply
 // @access  Private
 //
@@ -199,20 +286,19 @@ async function checkCustomerEligibility(discount, { customerId, customerNumber }
 //   couponCode?:     string   — specific code (optional)
 //   customerNumber:  string
 //   customerId:      string
-//   cartItems: [{
-//     productId, categoryId, productName, price, quantity
-//   }]
+//   cartItems: [{ productId, categoryId, productName, price, quantity }]
 // }
 //
-// Logic:
-//  1. If couponCode provided → evaluate ONLY that campaign
-//     (still respects combineOther against active auto-apply campaigns)
-//  2. If no couponCode → find ALL active campaigns with empty couponCode (auto-apply)
-//  3. For each candidate campaign run full eligibility + item-split
-//  4. combineOther=false on ANY applied campaign blocks adding further campaigns
-//  5. Each campaign's discount is calculated on ITS OWN eligible items' subtotal
-//     (items can be eligible for multiple campaigns → each gets its own deduction)
-//  6. Aggregate final amounts and return full breakdown per campaign
+// Rules:
+//  1. Coupon shared  → evaluated FIRST (gift card coupon or regular coupon).
+//  2. Coupon applies & is non-combinable → it is the only offer applied.
+//  3. Coupon applies & is combinable     → only combinable auto offers stack on top.
+//  4. Coupon invalid / expired / below minCart → auto offers still run as fallback,
+//     and `couponError` explains why the code did not work.
+//  5. No coupon → all combinable auto offers stack; the best single
+//     non-combinable offer competes against that stack, higher saving wins.
+//  6. Each campaign is calculated on ITS OWN eligible items' subtotal;
+//     total discount is capped at the cart subtotal.
 // ─────────────────────────────────────────────────────────────────────────────
 const applyDiscount = async (req, res) => {
   try {
@@ -227,218 +313,114 @@ const applyDiscount = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Cart is empty.' });
     }
 
-    const now = new Date();
+    const now          = new Date();
+    const customerCtx  = { customerId, customerNumber };
+    const appliedResults = [];
+    const skippedResults = [];
+    let couponError = null;
 
-    // ── 1. Gather candidate campaigns ─────────────────────────────────────────
-    let candidates = [];
+    // ── 1. ENTERED COUPON (highest priority) ──────────────────────────────────
+    const entered = (couponCode || '').trim().toUpperCase();
+    let enteredDiscount = null;
 
-    // 1a. Always fetch auto-apply campaigns (empty couponCode)
-    const autoApplyCandidates = await Discount.find({ couponCode: '', status: 'active' }).lean();
-    candidates = [...autoApplyCandidates];
+    if (entered) {
+      const giftCard = await GiftCard.findOne({ couponCode: entered, status: 'active' }).lean();
 
-    // 1b. Auto-fetch active gift cards for this customer number
-    if (customerNumber) {
-    
-    const normalizedNumber = customerNumber.replace(/^\+/, '');
-
-    const activeGiftCards = await GiftCard.find({
-      recipientNumber: {
-        $in: [normalizedNumber, `+${normalizedNumber}`]
-      },
-      status: 'active'
-    }).lean();
-
-      if (activeGiftCards.length) {
-        const giftCardDiscountIds = activeGiftCards
-          .map(gc => gc.discountDocId)
-          .filter(Boolean);
-
-        const giftCardDiscounts = await Discount.find({
-          _id: { $in: giftCardDiscountIds },
-          status: 'active'
-        }).lean();
-
-        // Tag them so scope check knows to skip customer ID validation
-        giftCardDiscounts.forEach(d => { d._isGiftCard = true; });
-        candidates.push(...giftCardDiscounts);
+      if (giftCard) {
+        if (customerNumber && norm(giftCard.recipientNumber) !== norm(customerNumber)) {
+          couponError = 'This gift card coupon is not valid for your account.';
+        } else if (giftCard.discountDocId) {
+          enteredDiscount = await Discount.findOne({
+            _id: giftCard.discountDocId, status: 'active'
+          }).lean();
+          if (enteredDiscount) enteredDiscount._isGiftCard = true;
+          else couponError = 'Invalid or expired gift card.';
+        } else {
+          couponError = 'Invalid or expired gift card.';
+        }
+      } else {
+        enteredDiscount = await Discount.findOne({ couponCode: entered, status: 'active' }).lean();
+        if (!enteredDiscount) couponError = 'Invalid or expired coupon code.';
       }
     }
 
-    // 1c. If a coupon code was provided, fetch that campaign too
-    if (couponCode && couponCode.trim()) {
-      const upper = couponCode.trim().toUpperCase();
+    let couponApplied = null; // { applied, combinable }
+    if (enteredDiscount) {
+      const r = await evaluateCampaign(enteredDiscount, cartItems, customerCtx, now);
+      if (r.skip) {
+        skippedResults.push(r.skip);
+        couponError = r.skip.reason;
+      } else {
+        couponApplied = r;
+        appliedResults.push(r.applied);
+      }
+    }
 
-      // Check if it's a gift card coupon first
-      const giftCardByCoupon = await GiftCard.findOne({
-        couponCode: upper,
+    // ── 2. AUTO-APPLY CANDIDATES (auto campaigns + customer's gift cards) ─────
+    let autoCandidates = await Discount.find({ couponCode: '', status: 'active' }).lean();
+
+    if (customerNumber) {
+      const n = norm(customerNumber);
+      const activeGiftCards = await GiftCard.find({
+        recipientNumber: { $in: [n, `+${n}`] },
         status: 'active'
       }).lean();
 
-      if (giftCardByCoupon) {
-        // Validate it belongs to this customer
-        if (customerNumber && giftCardByCoupon.recipientNumber !== customerNumber) {
-          return res.status(403).json({
-            success: false,
-            message: 'This gift card coupon is not valid for your account.'
-          });
-        }
-
-        // Load its linked Discount doc
-        if (giftCardByCoupon.discountDocId) {
-          const gcDiscount = await Discount.findOne({
-            _id: giftCardByCoupon.discountDocId,
-            status: 'active'
-          }).lean();
-
-          if (!gcDiscount) {
-            return res.status(404).json({ success: false, message: 'Invalid or expired gift card.' });
-          }
-
-          // Avoid duplicate if already auto-fetched in step 1b
-          const alreadyAdded = candidates.some(c => String(c._id) === String(gcDiscount._id));
-          if (!alreadyAdded) {
-            gcDiscount._isGiftCard = true;
-            candidates.push(gcDiscount);
-          }
-        }
-      } else {
-        // Regular coupon code
-        const couponCandidate = await Discount.findOne({
-          couponCode: upper,
-          status: 'active'
-        }).lean();
-
-        if (!couponCandidate) {
-          return res.status(404).json({ success: false, message: 'Invalid or expired coupon code.' });
-        }
-
-        // Avoid duplicate
-        const alreadyAdded = candidates.some(c => String(c._id) === String(couponCandidate._id));
-        if (!alreadyAdded) candidates.push(couponCandidate);
+      const ids = activeGiftCards.map(g => g.discountDocId).filter(Boolean);
+      if (ids.length) {
+        const gcDiscounts = await Discount.find({ _id: { $in: ids }, status: 'active' }).lean();
+        gcDiscounts.forEach(d => { d._isGiftCard = true; });
+        autoCandidates.push(...gcDiscounts);
       }
     }
 
-    // ── 2. Filter by date validity ────────────────────────────────────────────
-    candidates = candidates.filter(d => {
-      if (d.startDate && new Date(d.startDate) > now) return false;
-      if (d.endDate   && new Date(d.endDate)   < now) return false;
+    // De-dupe, and drop the entered coupon if it is already in the list
+    const seen = new Set(enteredDiscount ? [String(enteredDiscount._id)] : []);
+    autoCandidates = autoCandidates.filter(d => {
+      const k = String(d._id);
+      if (seen.has(k)) return false;
+      seen.add(k);
       return true;
     });
 
-    if (!candidates.length) {
-      return res.status(200).json({
-        success: false,
-        message: 'No active discounts found for your cart.',
-        data: { appliedDiscounts: [], skippedDiscounts: [] }
-      });
-    }
+    // ── 3. DECIDE WHICH AUTO OFFERS CAN JOIN ──────────────────────────────────
+    if (couponApplied && !couponApplied.combinable) {
+      // Coupon is exclusive: nothing else applies
+      for (const d of autoCandidates) {
+        skippedResults.push(
+          skipEntry(d, `Not applied — coupon ${entered} cannot be combined with other offers.`)
+        );
+      }
+    } else {
+      const combinable = [];
+      const exclusive  = [];
 
-    // ── 3. Evaluate each campaign ─────────────────────────────────────────────
-    const customerCtx = { customerId, customerNumber };
-
-    const appliedResults  = [];
-    const skippedResults  = [];
-
-    let nonCombinableLocked = false;
-
-    for (const discount of candidates) {
-
-      // 3a. combineOther gate
-      if (nonCombinableLocked) {
-        skippedResults.push({
-          campaignId:   discount._id,
-          campaignName: discount.campaignName,
-          couponCode:   discount.couponCode || null,
-          reason: 'Skipped — a previously applied coupon cannot be combined with other offers.'
-        });
-        continue;
+      for (const d of autoCandidates) {
+        const r = await evaluateCampaign(d, cartItems, customerCtx, now);
+        if (r.skip) { skippedResults.push(r.skip); continue; }
+        (r.combinable ? combinable : exclusive).push(r.applied);
       }
 
-      if (!discount.limits?.combineOther && appliedResults.length > 0) {
-        skippedResults.push({
-          campaignId:   discount._id,
-          campaignName: discount.campaignName,
-          couponCode:   discount.couponCode || null,
-          reason: 'This coupon cannot be combined with other offers already applied.'
-        });
-        continue;
-      }
+      const notCombinableReason = 'This offer cannot be combined with other offers already applied.';
 
-      // 3b. Customer eligibility
-      const customerError = await checkCustomerEligibility(discount, customerCtx);
-      if (customerError) {
-        skippedResults.push({
-          campaignId:   discount._id,
-          campaignName: discount.campaignName,
-          couponCode:   discount.couponCode || null,
-          reason: customerError
-        });
-        continue;
-      }
+      if (couponApplied) {
+        // Combinable coupon: only combinable autos may stack
+        appliedResults.push(...combinable);
+        exclusive.forEach(a => skippedResults.push(skipFromApplied(a, notCombinableReason)));
+      } else {
+        // No coupon: stack of combinables vs best single exclusive offer
+        const sum  = arr => arr.reduce((s, a) => s + a.discountAmount, 0);
+        const best = [...exclusive].sort((a, b) => b.discountAmount - a.discountAmount)[0];
 
-      // 3c. Item eligibility
-      const { eligibleItems, ineligibleItems } = splitItemsByScope(cartItems, discount);
-      if (!eligibleItems.length) {
-        skippedResults.push({
-          campaignId:   discount._id,
-          campaignName: discount.campaignName,
-          couponCode:   discount.couponCode || null,
-          reason: 'No items in your cart are eligible for this discount.'
-        });
-        continue;
-      }
-
-      // 3d. Compute financials
-      const eligibleSubtotal = eligibleItems.reduce(
-        (s, i) => s + toNum(i.price) * (i.quantity || 1), 0
-      );
-
-      const { discountAmount, tierApplied, freeShipping, error } =
-        computeDiscount(discount, eligibleSubtotal);
-
-      if (error) {
-        skippedResults.push({
-          campaignId:   discount._id,
-          campaignName: discount.campaignName,
-          couponCode:   discount.couponCode || null,
-          reason: error
-        });
-        continue;
-      }
-
-      // ✅ Campaign passes — record it
-      appliedResults.push({
-        campaignId:    discount._id,
-        campaignName:  discount.campaignName,
-        couponCode:    discount.couponCode || null,
-        discountType:  discount.discountType,
-        pricingModel:  discount.pricingModel,
-        freeShipping,
-        isGiftCard:    discount._isGiftCard || false,
-
-        eligibleItems:   eligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
-        ineligibleItems: ineligibleItems.map(i => ({ productId: i.productId, productName: i.productName })),
-        itemBreakdown:   buildItemBreakdown(eligibleItems, discountAmount, eligibleSubtotal),
-
-        eligibleSubtotal:   parseFloat(eligibleSubtotal.toFixed(2)),
-        discountAmount:     parseFloat(discountAmount.toFixed(2)),
-
-        tierApplied: tierApplied,
-        nextTier:    getNextTierHint(discount, eligibleSubtotal),
-
-        appliedDiscountEmbed: {
-          campaignId:     discount._id,
-          campaignName:   discount.campaignName,
-          couponCode:     discount.couponCode || null,
-          discountType:   discount.discountType,
-          discountAmount: parseFloat(discountAmount.toFixed(2)),
-          freeShipping
+        if (best && best.discountAmount > sum(combinable)) {
+          const reason = `A better offer (${best.campaignName}) was applied instead.`;
+          appliedResults.push(best);
+          combinable.forEach(a => skippedResults.push(skipFromApplied(a, reason)));
+          exclusive.filter(a => a !== best).forEach(a => skippedResults.push(skipFromApplied(a, reason)));
+        } else {
+          appliedResults.push(...combinable);
+          exclusive.forEach(a => skippedResults.push(skipFromApplied(a, notCombinableReason)));
         }
-      });
-
-      // Lock combinability if this campaign is non-combinable
-      if (!discount.limits?.combineOther) {
-        nonCombinableLocked = true;
       }
     }
 
@@ -446,7 +428,8 @@ const applyDiscount = async (req, res) => {
     if (!appliedResults.length) {
       return res.status(200).json({
         success: false,
-        message: 'No active discounts found for your cart.',
+        message: couponError || 'No active discounts found for your cart.',
+        data: { appliedDiscounts: [], skippedDiscounts: skippedResults, couponError }
       });
     }
 
@@ -494,14 +477,19 @@ const applyDiscount = async (req, res) => {
       ? `1 discount applied — you save ₹${cappedDiscount.toFixed(2)}!`
       : `${totalApplied} discounts applied — you save ₹${cappedDiscount.toFixed(2)} in total!`;
 
+    const fallbackNote = couponError ? ` (Coupon ${entered}: ${couponError})` : '';
+
     return res.json({
       success: true,
-      message: summaryMsg,
+      message: summaryMsg + fallbackNote,
       data: {
         cartSubtotal:    parseFloat(cartSubtotal.toFixed(2)),
         totalDiscount:   parseFloat(cappedDiscount.toFixed(2)),
         finalAmount:     parseFloat(finalAmount.toFixed(2)),
         hasFreeShipping,
+
+        couponError,                       // null when coupon worked or none was sent
+        couponApplied: !!couponApplied,
 
         appliedDiscounts:      appliedResults,
         skippedDiscounts:      skippedResults,
@@ -695,9 +683,9 @@ const validateCoupon = async (req, res) => {
     if (!discount) return res.status(404).json({ success: false, message: 'Invalid or expired coupon code.' });
 
     const now = new Date();
-    if (discount.startDate && new Date(discount.startDate) > now)
+    if (discount.startDate && toStart(discount.startDate) > now)
       return res.status(400).json({ success: false, message: 'This coupon is not yet active.' });
-    if (discount.endDate && new Date(discount.endDate) < now)
+    if (discount.endDate && toEnd(discount.endDate) < now)
       return res.status(400).json({ success: false, message: 'This coupon has expired.' });
 
     const cart = Number(cartTotal) || 0;
