@@ -6,12 +6,13 @@ const bodyParser = require('body-parser');
 const routes = require('./api/routes');
 const path = require('path');
 const errorHandler = require('./api/middlewares/errorHandler');
+const { startFollowUpJob } = require('./api/jobs/followupJob');
 
 const app = express();
 const port = process.env.PORT || 3000;
-
 // ==================== DB ====================
 connectDB();
+startFollowUpJob();
 
 // ==================== MIDDLEWARE ====================
 app.use(cors({

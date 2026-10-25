@@ -120,6 +120,10 @@ const contactSchema = new mongoose.Schema({
     instanceId: { type: String },
     reason: { type: String }
   }],
+  reminderCount:     { type: Number, default: 0 },   // 0 = none sent, 1 = first sent, ...
+  lastReminderAt:    { type: Date },
+  reminderPendingAt: { type: Date, default: null },  // set when numbers go to the LLM, cleared on callback
+  reminderFailCount: { type: Number, default: 0 },
 }, { timestamps: true });
 
 const customerAddressSchema = new mongoose.Schema(

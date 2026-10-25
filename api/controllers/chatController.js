@@ -104,7 +104,10 @@ const handleIncomingMessage = async (message, value) => {
 
       const updateData = {
         lastMessageAt: new Date(),
-        lastMessageId: message.id
+        lastMessageId: message.id,
+        reminderCount: 0,
+        reminderPendingAt: null,
+        reminderFailCount: 0
       };
 
       // if contact exists but name missing

@@ -18,6 +18,7 @@ const {
   llmCallback
 } = require('../controllers/chatController');
 const { uploadMultiple, handleUploadError, uploadMessageFile } = require('../middlewares/upload');
+const { followUpMessage , triggerFollowUp } = require('../controllers/followupController');
 
 // Webhook routes (public)
 router.get('/webhook', verifyWebhook);
@@ -68,6 +69,8 @@ router.post('/react', protect, reactValidation, reactToMessage);
 
 router.post('/llm-callback', llmCallback);
 
+router.post('/followupMessage', followUpMessage);
+router.post('/followup/run', triggerFollowUp);   // test trigger
 
 router.route('/file') 
   .post(protect, uploadMessageFile, handleUploadError, uploadFile);
