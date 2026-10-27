@@ -199,7 +199,7 @@ exports.getContact = async (req, res) => {
 exports.updateContactStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const validStatuses = ['enquiry', 'cart', 'checkout', 'not_delivered', 'delivered'];
+    const validStatuses = ['enquiry', 'cart', 'checkout', 'completed','not_delivered', 'delivered'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }

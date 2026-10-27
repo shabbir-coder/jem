@@ -93,7 +93,7 @@ const contactSchema = new mongoose.Schema({
   mapUrl: { type: String },
   status: {
     type: String,
-    enum: ['enquiry', 'cart', 'checkout', 'not_delivered', 'delivered'],
+    enum: ['enquiry', 'cart', 'checkout', 'completed', 'not_delivered', 'delivered'],
     default: 'enquiry'
   },
   statusLog: [{ type: { type: String, default: 'enquiry' }, updatedAt: { type: Date, default: Date.now } }],
